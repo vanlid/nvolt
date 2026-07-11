@@ -25,7 +25,8 @@ var p11KitProxyCandidates = []string{
 // install paths (OpenSC, YubiKey ykcs11, p11-kit-client) follow, labeled by
 // basename. Any common-path entry whose path resolves to the proxy is skipped.
 func DetectModules() []DiscoveredModule {
-	return detectModulesUnix(p11KitProxyCandidates, candidatesForOS())
+	mods := detectModulesUnix(p11KitProxyCandidates, candidatesForOS())
+	return appendEmbeddedOption(mods, embeddedModuleAvailable)
 }
 
 // detectModulesUnix is the injectable core of DetectModules: it probes the

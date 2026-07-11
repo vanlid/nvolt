@@ -105,7 +105,9 @@ func defaultModulePathFrom(candidates []string) (string, error) {
 
 // ResolveModulePath resolves the PKCS#11 module path to use, in order of
 // precedence: an explicit --module flag value, then the NVOLT_PKCS11_MODULE
-// environment variable, then autodetection of common install locations.
+// environment variable, then autodetection of common install locations. The
+// value may be the "embedded" sentinel (a real path here, materialized to a
+// file by Open on load); it is passed through unchanged like any other path.
 func ResolveModulePath(flagValue string) (string, error) {
 	if flagValue != "" {
 		return flagValue, nil
