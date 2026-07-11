@@ -181,6 +181,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # Full history + tags so we can compute <latest-tag>-dev-<sha>.
+          fetch-depth: 0
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -207,13 +210,20 @@ jobs:
             gh release create "$VERSION" ./upload/* \
               --title "$VERSION" --generate-notes $PRERELEASE
           else
-            # workflow_dispatch: a single rolling "dev" pre-release, replaced
-            # each run and pointed at the built commit. Binaries report their
-            # version via `nvolt version` (e.g. v0.1.0-dev-<sha>).
+            # workflow_dispatch: a single rolling "dev" pre-release. The TAG
+            # stays "dev" (stable URL, re-pointed at the built commit each run),
+            # while the release TITLE carries the full version
+            # (<latest-tag>-dev-<sha>) matching what `nvolt version` reports.
+            LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || true)
+            if [[ -n "$LATEST_TAG" ]]; then
+              VERSION="${LATEST_TAG}-dev-${GITHUB_SHA::7}"
+            else
+              VERSION="dev-${GITHUB_SHA::7}"
+            fi
             gh release delete dev --yes --cleanup-tag 2>/dev/null || true
             gh release create dev ./upload/* \
               --target "$GITHUB_SHA" \
-              --title "Development build (${GITHUB_SHA::7})" \
+              --title "$VERSION" \
               --prerelease \
-              --notes "Rolling development build — not a stable release. Run \`nvolt version\` to see the exact build."
+              --notes "Rolling development build \`${VERSION}\` (commit \`${GITHUB_SHA}\`) — not a stable release. The \`dev\` tag always points at the newest dev build."
           fi
