@@ -47,7 +47,11 @@ type pkcs11EnrollOpts struct {
 }
 
 // addPKCS11EnrollFlags registers the shared --pkcs11/--module/--uri/--pin-mode
-// flags on init and join.
+// flags on init and join. The flag names deliberately match the
+// `nvolt pkcs11` subcommands so a given option reads the same on every command.
+// There is intentionally no --force here: re-running init on an already-enrolled
+// PKCS#11 machine is idempotent, and replacing a software identity with a
+// hardware one is done explicitly via `nvolt pkcs11 use --force`.
 func addPKCS11EnrollFlags(cmd *cobra.Command) {
 	cmd.Flags().Bool("pkcs11", false, "Back this machine's identity with a PKCS#11 token instead of a software keypair")
 	cmd.Flags().String("module", "", "Path to PKCS#11 module (.so) (with --pkcs11); autodetected if omitted")
@@ -88,9 +92,8 @@ func runInit(repoSpec string, pkcs11Opts *pkcs11EnrollOpts) error {
 	// machine — and would wrongly re-prompt to generate a software keypair.
 	// The default (software) path is unchanged.
 	if pkcs11Opts != nil {
-		ui.Step("Enrolling PKCS#11-backed machine identity")
-		if err := enrollPKCS11Machine(pkcs11Opts.module, pkcs11Opts.uri, pkcs11Opts.pinMode, false); err != nil {
-			return fmt.Errorf("failed to enroll PKCS#11 machine: %w", err)
+		if err := ensurePKCS11MachineInitialized(pkcs11Opts); err != nil {
+			return err
 		}
 	} else {
 		ui.Step("Checking machine keypair")

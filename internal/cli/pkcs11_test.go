@@ -137,9 +137,11 @@ func TestUseEnrollsPKCS11Machine(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("NVOLT_PKCS11_PIN", "1234")
 
-	if _, err := captureStdout(func() error {
-		return runPKCS11Use(mod, "pkcs11:token=nvolt-test;id=%01;type=private", "env", false)
-	}); err != nil {
+	uri := "pkcs11:token=nvolt-test;id=%01;type=private"
+	out, err := captureStdout(func() error {
+		return runPKCS11Use(mod, uri, "env")
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -150,86 +152,38 @@ func TestUseEnrollsPKCS11Machine(t *testing.T) {
 	if mi.PublicKey == "" || mi.Fingerprint == "" {
 		t.Fatal("missing pub/fingerprint")
 	}
-}
 
-// TestUseRefusesToOverwriteWithoutForce proves runPKCS11Use guards against
-// clobbering an already-initialized machine identity unless --force is set.
-func TestUseRefusesToOverwriteWithoutForce(t *testing.T) {
-	mod := hsmtest.Provision(t)
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("NVOLT_PKCS11_PIN", "1234")
-
-	uri := "pkcs11:token=nvolt-test;id=%01;type=private"
-	if _, err := captureStdout(func() error {
-		return runPKCS11Use(mod, uri, "env", false)
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	out, err := captureStdout(func() error {
-		return runPKCS11Use(mod, uri, "env", false)
-	})
-	if err == nil {
-		t.Fatalf("expected error re-enrolling without --force, got output:\n%s", out)
-	}
-
-	if _, err := captureStdout(func() error {
-		return runPKCS11Use(mod, uri, "env", true)
-	}); err != nil {
-		t.Fatalf("expected --force to allow re-enroll, got: %v", err)
-	}
-}
-
-// TestUseForceOverSoftwareMachineRemovesPrivateKey proves that --force
-// re-enrolling a PKCS#11 identity over an EXISTING software-backed machine
-// removes the now-orphaned software private_key.pem (Fix 3: a lingering
-// plaintext key on disk after moving identity to hardware is a security
-// hygiene bug). It also exercises the literal-URI banner fix (Fix 1) via
-// percentEscapeForUI below.
-func TestUseForceOverSoftwareMachineRemovesPrivateKey(t *testing.T) {
-	mod := hsmtest.Provision(t)
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("NVOLT_PKCS11_PIN", "1234")
-
-	// Start from a SOFTWARE machine identity: InitializeMachine writes
-	// private_key.pem + machine-info.json.
-	if _, err := vault.InitializeMachine(""); err != nil {
-		t.Fatalf("InitializeMachine: %v", err)
-	}
-	homePaths, err := vault.GetHomePaths()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !vault.FileExists(homePaths.PrivateKey) {
-		t.Fatalf("expected software private key at %s after InitializeMachine", homePaths.PrivateKey)
-	}
-
-	uri := "pkcs11:token=nvolt-test;id=%01;type=private"
-	out, err := captureStdout(func() error {
-		return runPKCS11Use(mod, uri, "env", true)
-	})
-	if err != nil {
-		t.Fatalf("runPKCS11Use --force over software machine: %v", err)
-	}
-
-	// (a) machine-info now reflects the pkcs11 identity.
-	mi := readMachineInfo(t)
-	if mi.KeySource == nil || mi.KeySource.Source != "pkcs11" {
-		t.Fatalf("expected key_source.source=pkcs11 after --force enroll, got: %+v", mi.KeySource)
-	}
-
-	// (b) the orphaned software private key must be gone.
-	if vault.FileExists(homePaths.PrivateKey) {
-		t.Fatalf("expected orphaned software private key %s to be removed after PKCS#11 --force enroll", homePaths.PrivateKey)
-	}
-
-	// Display fix (Fix 1): the banner should contain the literal URI,
-	// including the literal "id=%01", not a corrupted "%!" sequence.
+	// The enroll banner must render the literal URI, including "id=%01", not a
+	// corrupted format-verb artifact (Fix 1).
 	if !strings.Contains(out, "id=%01") {
 		t.Fatalf("expected banner to contain literal URI %q, got:\n%s", uri, out)
 	}
 	if strings.Contains(out, "%!") {
 		t.Fatalf("banner shows a corrupted format-verb artifact (%%!), got:\n%s", out)
+	}
+}
+
+// TestUseRefusesToOverwriteExistingIdentity proves runPKCS11Use never clobbers
+// an already-initialized machine identity. Replacing one is a deliberate manual
+// step (remove machine-info.json), not a flag: overwriting would orphan every
+// secret wrapped to the current key, since the master key is not re-wrapped.
+func TestUseRefusesToOverwriteExistingIdentity(t *testing.T) {
+	mod := hsmtest.Provision(t)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("NVOLT_PKCS11_PIN", "1234")
+
+	uri := "pkcs11:token=nvolt-test;id=%01;type=private"
+	if _, err := captureStdout(func() error {
+		return runPKCS11Use(mod, uri, "env")
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := captureStdout(func() error {
+		return runPKCS11Use(mod, uri, "env")
+	})
+	if err == nil {
+		t.Fatalf("expected error re-enrolling over an existing identity, got output:\n%s", out)
 	}
 }
 

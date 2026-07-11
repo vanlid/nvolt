@@ -22,7 +22,6 @@ var pkcs11Module string
 var pkcs11UseModule string
 var pkcs11UseURI string
 var pkcs11UsePinMode string
-var pkcs11UseForce bool
 
 var pkcs11GenModule string
 var pkcs11GenToken string
@@ -166,14 +165,14 @@ interactively instead.`,
 		if err != nil {
 			return err
 		}
-		return runPKCS11Use(module, uri, pkcs11UsePinMode, pkcs11UseForce)
+		return runPKCS11Use(module, uri, pkcs11UsePinMode)
 	},
 }
 
 // runPKCS11Use is the `nvolt pkcs11 use` command body; it delegates to the
 // shared enrollPKCS11Machine so init/join --pkcs11 run the identical flow.
-func runPKCS11Use(module, uri, pinMode string, force bool) error {
-	return enrollPKCS11Machine(module, uri, pinMode, force)
+func runPKCS11Use(module, uri, pinMode string) error {
+	return enrollPKCS11Machine(module, uri, pinMode)
 }
 
 // enrollPKCS11Machine enrolls the on-card key at uri (via module) as this
@@ -181,7 +180,7 @@ func runPKCS11Use(module, uri, pinMode string, force bool) error {
 // construction but sourcing the keypair from the token instead of generating a
 // software one. It is the single enroll implementation shared by
 // `nvolt pkcs11 use` and the --pkcs11 branch of init/join.
-func enrollPKCS11Machine(module, uri, pinMode string, force bool) error {
+func enrollPKCS11Machine(module, uri, pinMode string) error {
 	if module == "" {
 		return fmt.Errorf("no PKCS#11 module specified; use --module or set NVOLT_PKCS11_MODULE")
 	}
@@ -194,10 +193,14 @@ func enrollPKCS11Machine(module, uri, pinMode string, force bool) error {
 		return err
 	}
 
-	// Guard against clobbering an existing machine identity, mirroring
-	// InitializeMachine's own guard.
-	if !force && vault.FileExists(homePaths.MachineInfo) {
-		return fmt.Errorf("machine already initialized: %s exists (use --force)", homePaths.MachineInfo)
+	// Never clobber an existing identity. Replacing one is intentionally not a
+	// one-flag operation: overwriting machine-info would orphan every secret
+	// wrapped to the current key (the master key is not re-wrapped here). To
+	// re-enroll a different key, remove the identity below and start fresh;
+	// migrating a software identity to hardware without losing access is a
+	// separate, future flow that re-wraps the master key first.
+	if vault.FileExists(homePaths.MachineInfo) {
+		return fmt.Errorf("this machine already has an identity (%s); remove it to enroll a different key", homePaths.MachineInfo)
 	}
 
 	src, pub, err := keyprovider.Enroll(module, uri, pinMode, func() (string, error) {
@@ -226,8 +229,22 @@ func enrollPKCS11Machine(module, uri, pinMode string, force bool) error {
 		hostname = "unknown"
 	}
 
+	// Offer a custom machine name, mirroring software init's first-time setup.
+	// Gated on isInteractive() (like the module/token/key wizard) so scripted
+	// and headless runs silently fall back to the hostname-derived default
+	// rather than blocking on stdin. Prompted after enrollment so we never ask
+	// a user to name a machine whose card/PIN just failed.
+	customName := ""
+	if isInteractive() {
+		name, err := ui.PromptMachineName()
+		if err != nil {
+			return fmt.Errorf("failed to read machine name: %w", err)
+		}
+		customName = name
+	}
+
 	machineInfo := &types.MachineInfo{
-		ID:          vault.GenerateMachineID("", hostname, fingerprint),
+		ID:          vault.GenerateMachineID(customName, hostname, fingerprint),
 		PublicKey:   string(publicKeyPEM),
 		Fingerprint: fingerprint,
 		Hostname:    hostname,
@@ -240,10 +257,10 @@ func enrollPKCS11Machine(module, uri, pinMode string, force bool) error {
 		return fmt.Errorf("failed to save machine info: %w", err)
 	}
 
-	// Moving to a PKCS#11-backed identity (including --force re-enrollment
-	// over a machine that previously held a software keypair) must not leave
-	// the old software private key on disk: a lingering plaintext key would
-	// undermine the point of moving identity to hardware.
+	// We only reach here when no machine-info existed, but a stray software
+	// private_key.pem can still be on disk from a half-finished software init.
+	// A PKCS#11-backed machine keeps no local private key, so remove it: a
+	// lingering plaintext key would undermine moving the identity to hardware.
 	if vault.FileExists(homePaths.PrivateKey) {
 		if err := vault.SecureDeleteFile(homePaths.PrivateKey); err != nil {
 			return fmt.Errorf("failed to remove orphaned software private key: %w", err)
@@ -562,7 +579,6 @@ func init() {
 	pkcs11UseCmd.Flags().StringVar(&pkcs11UseModule, "module", "", "Path to PKCS#11 module (.so); autodetected if omitted")
 	pkcs11UseCmd.Flags().StringVar(&pkcs11UseURI, "uri", "", "PKCS#11 URI of the RSA key to enroll; omit on a terminal to pick interactively")
 	pkcs11UseCmd.Flags().StringVar(&pkcs11UsePinMode, "pin-mode", "prompt", "How to obtain the PIN: prompt, env, or none")
-	pkcs11UseCmd.Flags().BoolVar(&pkcs11UseForce, "force", false, "Overwrite an existing machine identity")
 
 	pkcs11Cmd.AddCommand(pkcs11GenerateCmd)
 	pkcs11GenerateCmd.Flags().StringVar(&pkcs11GenModule, "module", "", "Path to PKCS#11 module (.so); autodetected if omitted")
