@@ -54,13 +54,26 @@ func Enroll(module, uri, pinMode string, pin func() (string, error)) (types.KeyS
 	}
 	defer sess.Close()
 
-	p, err := pin()
-	if err != nil {
-		return types.KeySource{}, nil, fmt.Errorf("obtain PIN: %w", err)
-	}
-	if p != "" {
-		if err := sess.Login(p); err != nil {
+	switch {
+	case sess.ProtectedAuthPath():
+		// Pinpad/reader token: the reader collects the PIN itself. Never
+		// prompt in the app and ignore pin()/pinMode entirely — the app has
+		// no PIN to supply.
+		if err := sess.LoginProtected(); err != nil {
 			return types.KeySource{}, nil, err
+		}
+	case !sess.LoginRequired():
+		// Token declares no login needed at all; skip login entirely.
+	default:
+		// Normal case (e.g. YubiKey PIV): existing --pin-mode logic.
+		p, err := pin()
+		if err != nil {
+			return types.KeySource{}, nil, fmt.Errorf("obtain PIN: %w", err)
+		}
+		if p != "" {
+			if err := sess.Login(p); err != nil {
+				return types.KeySource{}, nil, err
+			}
 		}
 	}
 
@@ -215,10 +228,6 @@ func loadPKCS11Decrypter(src types.KeySource) (crypto.Decrypter, func() error, e
 	if err != nil {
 		return nil, nil, err
 	}
-	pin, err := resolvePIN(src.PinMode)
-	if err != nil {
-		return nil, nil, err
-	}
 
 	m, err := pkcs11.Open(src.Module)
 	if err != nil {
@@ -229,13 +238,35 @@ func loadPKCS11Decrypter(src types.KeySource) (crypto.Decrypter, func() error, e
 		_ = m.Close()
 		return nil, nil, err
 	}
-	if pin != "" {
-		if err := sess.Login(pin); err != nil {
+
+	switch {
+	case sess.ProtectedAuthPath():
+		// Pinpad/reader token: the reader collects the PIN itself. Never
+		// prompt in the app and ignore src.PinMode entirely.
+		if err := sess.LoginProtected(); err != nil {
 			_ = sess.Close()
 			_ = m.Close()
 			return nil, nil, err
 		}
+	case !sess.LoginRequired():
+		// Token declares no login needed at all; skip login entirely.
+	default:
+		// Normal case (e.g. YubiKey PIV): existing --pin-mode logic.
+		pin, err := resolvePIN(src.PinMode)
+		if err != nil {
+			_ = sess.Close()
+			_ = m.Close()
+			return nil, nil, err
+		}
+		if pin != "" {
+			if err := sess.Login(pin); err != nil {
+				_ = sess.Close()
+				_ = m.Close()
+				return nil, nil, err
+			}
+		}
 	}
+
 	priv, err := sess.FindRSAPrivateKey(id)
 	if err != nil {
 		_ = sess.Close()

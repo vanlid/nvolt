@@ -3,6 +3,7 @@ package pkcs11
 import (
 	"bytes"
 	"crypto/rsa"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math/big"
@@ -24,6 +25,11 @@ var ErrMechanismUnsupported = errors.New("pkcs11: mechanism or parameters not su
 type Session struct {
 	m      *Module
 	handle uintptr
+	// flags is the token's CK_TOKEN_INFO.flags, captured by openSession at
+	// C_OpenSession time so callers can auto-detect PIN handling
+	// (CKF_LOGIN_REQUIRED / CKF_PROTECTED_AUTHENTICATION_PATH) without a
+	// second C_GetTokenInfo round trip.
+	flags uintptr
 }
 
 // Object is a PKCS#11 object handle.
@@ -54,7 +60,7 @@ func (m *Module) openSession(tokenLabel string, rw bool) (*Session, error) {
 	if err := m.initialize(); err != nil {
 		return nil, err
 	}
-	slot, err := m.findSlot(tokenLabel)
+	slot, tokenFlags, err := m.findSlot(tokenLabel)
 	if err != nil {
 		return nil, err
 	}
@@ -68,30 +74,34 @@ func (m *Module) openSession(tokenLabel string, rw bool) (*Session, error) {
 	if CKRV(rv) != CKR_OK {
 		return nil, fmt.Errorf("C_OpenSession: %s", CKRV(rv))
 	}
-	return &Session{m: m, handle: handle}, nil
+	return &Session{m: m, handle: handle, flags: tokenFlags}, nil
 }
 
-// findSlot returns the slot id of the token whose label matches tokenLabel.
-func (m *Module) findSlot(tokenLabel string) (uintptr, error) {
+// findSlot returns the slot id and CK_TOKEN_INFO.flags of the token whose
+// label matches tokenLabel.
+func (m *Module) findSlot(tokenLabel string) (uintptr, uintptr, error) {
 	var count uintptr
 	// tokenPresent = CK_TRUE (1)
 	rv, _, _ := purego.SyscallN(m.fn(idxGetSlotList), 1, 0, uintptr(unsafe.Pointer(&count)))
 	if CKRV(rv) != CKR_OK {
-		return 0, fmt.Errorf("C_GetSlotList(count): %s", CKRV(rv))
+		return 0, 0, fmt.Errorf("C_GetSlotList(count): %s", CKRV(rv))
 	}
 	if count == 0 {
-		return 0, fmt.Errorf("no token-present slots")
+		return 0, 0, fmt.Errorf("no token-present slots")
 	}
 	slots := make([]uintptr, count)
 	rv, _, _ = purego.SyscallN(m.fn(idxGetSlotList), 1,
 		uintptr(unsafe.Pointer(&slots[0])), uintptr(unsafe.Pointer(&count)))
 	if CKRV(rv) != CKR_OK {
-		return 0, fmt.Errorf("C_GetSlotList: %s", CKRV(rv))
+		return 0, 0, fmt.Errorf("C_GetSlotList: %s", CKRV(rv))
 	}
 
 	want := []byte(tokenLabel)
 	for _, slot := range slots[:count] {
-		// CK_TOKEN_INFO begins with label[32] (space-padded, not NUL-terminated).
+		// CK_TOKEN_INFO (Cryptoki 2.40, LP64) begins with label[32]
+		// (space-padded, not NUL-terminated), followed by manufacturerID[32]
+		// + model[16] + serialNumber[16] = 96 bytes, then flags (CK_ULONG,
+		// 8 bytes) at byte offset 96.
 		var info [256]byte
 		rv, _, _ = purego.SyscallN(m.fn(idxGetTokenInfo), slot, uintptr(unsafe.Pointer(&info[0])))
 		if CKRV(rv) != CKR_OK {
@@ -99,10 +109,11 @@ func (m *Module) findSlot(tokenLabel string) (uintptr, error) {
 		}
 		label := bytes.TrimRight(info[:32], " ")
 		if bytes.Equal(label, want) {
-			return slot, nil
+			flags := uintptr(binary.LittleEndian.Uint64(info[96:104]))
+			return slot, flags, nil
 		}
 	}
-	return 0, fmt.Errorf("no token with label %q", tokenLabel)
+	return 0, 0, fmt.Errorf("no token with label %q", tokenLabel)
 }
 
 // Login authenticates as the normal (user) role with the given PIN. An empty
@@ -121,6 +132,33 @@ func (s *Session) Login(pin string) error {
 	runtime.KeepAlive(pinB)
 	if CKRV(rv) != CKR_OK {
 		return fmt.Errorf("C_Login: %s", CKRV(rv))
+	}
+	return nil
+}
+
+// ProtectedAuthPath reports whether the token sets
+// CKF_PROTECTED_AUTHENTICATION_PATH: the reader/pinpad collects the PIN
+// itself, so the application must call LoginProtected (a NULL-PIN C_Login)
+// rather than prompting for and supplying a PIN.
+func (s *Session) ProtectedAuthPath() bool {
+	return s.flags&CKF_PROTECTED_AUTHENTICATION_PATH != 0
+}
+
+// LoginRequired reports whether the token sets CKF_LOGIN_REQUIRED. When
+// false, private objects are accessible without ever calling C_Login.
+func (s *Session) LoginRequired() bool {
+	return s.flags&CKF_LOGIN_REQUIRED != 0
+}
+
+// LoginProtected authenticates as the normal (user) role on a token whose
+// CKF_PROTECTED_AUTHENTICATION_PATH flag is set. It always calls C_Login
+// with a NULL PIN pointer and zero length so the reader/pinpad prompts the
+// user directly; the application must not (and, lacking the flag's
+// out-of-band channel, cannot) supply a PIN itself.
+func (s *Session) LoginProtected() error {
+	rv, _, _ := purego.SyscallN(s.m.fn(idxLogin), s.handle, CKU_USER, 0, 0)
+	if CKRV(rv) != CKR_OK {
+		return fmt.Errorf("C_Login (protected authentication path): %s", CKRV(rv))
 	}
 	return nil
 }

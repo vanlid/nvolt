@@ -32,6 +32,16 @@ const (
 	CKM_RSA_PKCS_KEY_PAIR_GEN uintptr = 0x00000000
 )
 
+// CK_TOKEN_INFO.flags bits (Cryptoki 2.40 SS9.5.1) that drive PIN-handling
+// auto-detection: CKF_LOGIN_REQUIRED tells us whether C_Login is needed at
+// all, and CKF_PROTECTED_AUTHENTICATION_PATH tells us the reader/pinpad
+// collects the PIN out-of-band, so the application must call C_Login with a
+// NULL PIN rather than supplying one.
+const (
+	CKF_LOGIN_REQUIRED                uintptr = 0x00000004
+	CKF_PROTECTED_AUTHENTICATION_PATH uintptr = 0x00000100
+)
+
 // Attribute types.
 const (
 	CKA_CLASS           uintptr = 0x00000000
