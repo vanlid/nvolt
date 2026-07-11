@@ -316,7 +316,9 @@ Discover and use RSA keys stored on a PKCS#11 hardware token (YubiKey, SoftHSM, 
 # List RSA keys visible on the token
 nvolt pkcs11 list
 
-# Enroll an on-card key as this machine's identity
+# Enroll an on-card key as this machine's identity.
+# With no flags, this walks you through picking a token and key;
+# or name the key directly with --uri:
 nvolt pkcs11 use --uri 'pkcs11:token=my-yubikey;id=%01;type=private'
 
 # Generate a new RSA keypair on the token
@@ -325,17 +327,38 @@ nvolt pkcs11 generate --token my-yubikey --label my-key --id 01 --bits 2048
 
 **Flags:**
 
-- `--module` - Path to the PKCS#11 module (`.so` on Linux/macOS, `.dll` on Windows). Optional - nvolt autodetects common OpenSC/YubiKey install locations; pass this (or set `NVOLT_PKCS11_MODULE`) to override
+- `--module` - Path to the PKCS#11 module (`.so` on Linux/macOS, `.dll` on Windows). Optional: nvolt autodetects common OpenSC/YubiKey locations, so you only need this (or `NVOLT_PKCS11_MODULE`) to override
 - `--uri` - PKCS#11 URI of the RSA key to enroll (required for `use`)
 - `--pin-mode` - How to obtain the PIN: `prompt`, `env`, or `none` (default: `prompt`)
 
 ## Using a hardware key (PKCS#11)
 
-nvolt can back a machine's identity with a hardware token instead of a software keypair - the private key is generated on (or imported to) the device and never leaves it. Signing and unwrap operations happen on-card via PKCS#11; nvolt only ever sees the public key.
+nvolt can keep this machine's private key on a hardware token (like a YubiKey) instead of in a file. The key is created on the device and never leaves it — nvolt only sees the public key, and the token itself does the decryption.
 
-The PKCS#11 module is autodetected from common OpenSC and YubiKey install locations, so `--module` is usually not needed. If nvolt can't find a module (or you want a specific one), pass `--module /path/to/opensc-pkcs11.so` on Linux/macOS or `--module 'C:\Program Files\OpenSC Project\OpenSC\pkcs11\opensc-pkcs11.dll'` on Windows, or set `NVOLT_PKCS11_MODULE` once in your shell profile.
+A typical setup looks like this:
 
-By default nvolt prompts for the token PIN with no terminal echo. Use `--pin-mode env` (reads `NVOLT_PKCS11_PIN`) for non-interactive setups like CI, or `--pin-mode none` for tokens that don't require a PIN for the operation being performed.
+```bash
+nvolt pkcs11 list      # show the tokens and keys nvolt can find
+nvolt init --pkcs11    # pick one and make it this machine's identity
+nvolt push             # push/pull/run then work as usual — the token unwraps your secrets
+```
+
+**Finding the module.** nvolt talks to the token through a PKCS#11 module — a `.so` file on Linux/macOS or a `.dll` on Windows, installed by OpenSC or your YubiKey software. nvolt checks the common install locations automatically, so you usually don't pass anything. If it can't find yours, point it at the file:
+
+- Linux/macOS: `--module /path/to/opensc-pkcs11.so`
+- Windows: `--module "C:\Program Files\OpenSC Project\OpenSC\pkcs11\opensc-pkcs11.dll"`
+
+Or set `NVOLT_PKCS11_MODULE` once in your shell profile so you never type it again.
+
+**Nothing shows up?** You need OpenSC (or your YubiKey vendor's tools) installed so a module exists on the machine:
+
+- Linux (Debian/Ubuntu): `sudo apt install opensc pcscd` — `pcscd` is the service that lets the system see the card
+- macOS: `brew install opensc`
+- Windows: install OpenSC from its [releases page](https://github.com/OpenSC/OpenSC/releases), or run `winget install OpenSC.OpenSC`
+
+Then plug in the token and run `nvolt pkcs11 list` again. (`pkcs11-tool --list-slots`, which comes with OpenSC, is a quick way to confirm the card is detected at all.)
+
+**Entering your PIN.** By default nvolt asks for the token PIN and hides it as you type. For automation, use `--pin-mode env` to read it from `NVOLT_PKCS11_PIN`, or `--pin-mode none` for tokens that don't require a PIN.
 
 ## Security
 
