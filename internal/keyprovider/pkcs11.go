@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	nvcrypto "github.com/iluxav/nvolt/internal/crypto"
+	"github.com/iluxav/nvolt/internal/pinentry"
 	"github.com/iluxav/nvolt/internal/pkcs11"
 	"github.com/iluxav/nvolt/internal/vault"
 	"github.com/iluxav/nvolt/pkg/types"
@@ -22,12 +23,6 @@ import (
 // would hand an attacker a padding oracle (Task 3 security requirement), so all
 // failure paths inside Decrypt collapse to this one value.
 var errUnwrap = errors.New("pkcs11: unwrap failed")
-
-// errPromptPINUnimplemented marks the pin_mode="prompt" hook that Task 8 will
-// replace with an interactive TTY prompt. It is intentionally a distinct,
-// pre-cryptographic configuration error (it fires before any ciphertext is
-// presented to the token), so it is safe to surface without opacity concerns.
-var errPromptPINUnimplemented = errors.New("prompt PIN entry wired in Task 8")
 
 // Enroll validates that a PKCS#11 token can serve as this machine's key backend
 // and pins the OAEP unwrap mode it actually supports.
@@ -249,9 +244,8 @@ func loadPKCS11Decrypter(src types.KeySource) (crypto.Decrypter, func() error, e
 }
 
 // resolvePIN returns the PIN for the given pin_mode. "env" reads
-// NVOLT_PKCS11_PIN; "prompt" is the Task 8 hook (returns
-// errPromptPINUnimplemented until a TTY prompt is wired); "none"/"" means the
-// token is used without a login.
+// NVOLT_PKCS11_PIN; "prompt" reads it interactively from the TTY via
+// internal/pinentry; "none"/"" means the token is used without a login.
 func resolvePIN(mode string) (string, error) {
 	switch mode {
 	case "env":
@@ -261,8 +255,7 @@ func resolvePIN(mode string) (string, error) {
 		}
 		return pin, nil
 	case "prompt":
-		// TASK 8: replace with an interactive TTY prompt for the PIN.
-		return "", errPromptPINUnimplemented
+		return pinentry.Read("prompt")
 	case "none", "":
 		return "", nil
 	default:
