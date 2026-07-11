@@ -66,6 +66,26 @@ connection.
 path X" on the remote filesystem. The forwarding mechanism (WSL+p11-kit here, or
 the USB/IP-straight-to-remote fallback in §7) never enters nvolt's code.
 
+### Alternative topology: YubiKey and nvolt both on Windows
+
+If the YubiKey is plugged into the **same Windows machine** where you'll run
+`nvolt` (e.g. a Windows build of `nvolt.exe`), none of the above applies — skip
+WSL, p11-kit, and USB/IP entirely. `nvolt` loads PKCS#11 modules natively on
+Windows via `LoadLibraryEx`, so just point `--module` at the Windows `.dll`
+directly:
+
+```powershell
+nvolt pkcs11 use `
+  --module "C:\Program Files\OpenSC Project\OpenSC\pkcs11\opensc-pkcs11.dll" `
+  --uri 'pkcs11:token=<TOKEN>;id=%01;type=private'
+```
+
+(or Yubico's own `ykcs11.dll`, typically under `C:\Program Files\Yubico\Yubico
+PIV Tool\bin\`). The rest of this runbook — enrollment flags, PIN modes, OAEP
+fallback, touch policy — behaves the same; only the module path and forwarding
+machinery differ. The WSL/p11-kit-forwarding sections below remain the primary
+path for the "YubiKey on Windows, nvolt on a remote Linux box" topology.
+
 ## 2. Windows steps (as Administrator)
 
 Install [`usbipd-win`](https://github.com/dorssel/usbipd-win) (via `winget` or the
