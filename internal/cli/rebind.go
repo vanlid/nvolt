@@ -97,17 +97,25 @@ func rebindToSoftware(mi *types.MachineInfo, identityPub *rsa.PublicKey, homePat
 			return fmt.Errorf("parse private key: %w", err)
 		}
 		if !samePublicKey(&priv.PublicKey, identityPub) {
-			return fmt.Errorf("that key's public key doesn't match this machine's identity")
+			return fmt.Errorf("that key's public key doesn't match this machine's identity; " +
+				"rebind only relocates the same key. To change to a different key, register it " +
+				"with 'nvolt machine add' and re-grant")
 		}
 		if vault.FileExists(homePaths.PrivateKey) {
-			existing, _ := os.ReadFile(homePaths.PrivateKey)
+			existing, err := os.ReadFile(homePaths.PrivateKey)
+			if err != nil {
+				return fmt.Errorf("read existing key: %w", err)
+			}
 			ep, err := nvcrypto.DecodePrivateKeyPEM(existing)
 			if err != nil || !samePublicKey(&ep.PublicKey, identityPub) {
 				return fmt.Errorf("a different private key already exists at %s — remove or relocate it first", homePaths.PrivateKey)
 			}
 			// existing already matches: nothing to write.
 		} else {
-			pemBytes, _ := nvcrypto.EncodePrivateKeyPEM(priv)
+			pemBytes, err := nvcrypto.EncodePrivateKeyPEM(priv)
+			if err != nil {
+				return fmt.Errorf("encode private key: %w", err)
+			}
 			if err := vault.WriteFileAtomic(homePaths.PrivateKey, pemBytes, vault.PrivateKeyPerm); err != nil {
 				return err
 			}
@@ -116,10 +124,15 @@ func rebindToSoftware(mi *types.MachineInfo, identityPub *rsa.PublicKey, homePat
 		if !vault.FileExists(homePaths.PrivateKey) {
 			return fmt.Errorf("no software key at %s; supply --privkey <path>", homePaths.PrivateKey)
 		}
-		existing, _ := os.ReadFile(homePaths.PrivateKey)
+		existing, err := os.ReadFile(homePaths.PrivateKey)
+		if err != nil {
+			return fmt.Errorf("read existing key: %w", err)
+		}
 		ep, err := nvcrypto.DecodePrivateKeyPEM(existing)
 		if err != nil || !samePublicKey(&ep.PublicKey, identityPub) {
-			return fmt.Errorf("the key at %s doesn't match this machine's identity", homePaths.PrivateKey)
+			return fmt.Errorf("the key at %s doesn't match this machine's identity; "+
+				"rebind only relocates the same key. To change to a different key, register it "+
+				"with 'nvolt machine add' and re-grant", homePaths.PrivateKey)
 		}
 	}
 	mi.KeySource = &types.KeySource{Source: "software"}
