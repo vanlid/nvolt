@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"os"
 	"strings"
 
 	nvcrypto "github.com/iluxav/nvolt/internal/crypto"
@@ -243,24 +242,12 @@ func loadPKCS11Decrypter(src types.KeySource) (crypto.Decrypter, func() error, e
 	return dec, closeFn, nil
 }
 
-// resolvePIN returns the PIN for the given pin_mode. "env" reads
-// NVOLT_PKCS11_PIN; "prompt" reads it interactively from the TTY via
-// internal/pinentry; "none"/"" means the token is used without a login.
+// resolvePIN returns the PIN for the given pin_mode. It delegates entirely to
+// internal/pinentry.Read, which implements the identical "env"/"prompt"/
+// "none" logic used at enroll time (`nvolt pkcs11 use`); kept as its own
+// function since internal/keyprovider call sites reference resolvePIN by name.
 func resolvePIN(mode string) (string, error) {
-	switch mode {
-	case "env":
-		pin := os.Getenv("NVOLT_PKCS11_PIN")
-		if pin == "" {
-			return "", errors.New("pin_mode=env but NVOLT_PKCS11_PIN is not set")
-		}
-		return pin, nil
-	case "prompt":
-		return pinentry.Read("prompt")
-	case "none", "":
-		return "", nil
-	default:
-		return "", fmt.Errorf("unknown pin_mode %q", mode)
-	}
+	return pinentry.Read(mode)
 }
 
 // machinePublicKey loads this machine's stored public key from machine-info.json.

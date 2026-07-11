@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	nvcrypto "github.com/iluxav/nvolt/internal/crypto"
@@ -150,11 +151,31 @@ func runPKCS11Use(module, uri, pinMode string, force bool) error {
 		return fmt.Errorf("failed to save machine info: %w", err)
 	}
 
+	// Moving to a PKCS#11-backed identity (including --force re-enrollment
+	// over a machine that previously held a software keypair) must not leave
+	// the old software private key on disk: a lingering plaintext key would
+	// undermine the point of moving identity to hardware.
+	if vault.FileExists(homePaths.PrivateKey) {
+		if err := vault.SecureDeleteFile(homePaths.PrivateKey); err != nil {
+			return fmt.Errorf("failed to remove orphaned software private key: %w", err)
+		}
+		ui.Info("Removed orphaned software private key %s (identity now backed by PKCS#11)", homePaths.PrivateKey)
+	}
+
 	ui.Section("PKCS#11 machine identity enrolled")
 	ui.PrintKeyValue("  Machine ID", machineInfo.ID)
 	ui.PrintKeyValue("  Fingerprint", machineInfo.Fingerprint)
 	ui.PrintKeyValue("  Module", module)
-	ui.PrintKeyValue("  URI", uri)
+	// ui.PrintKeyValue -> ui.Info double-formats: PrintKeyValue's own Sprintf
+	// embeds uri literally, but Info's Fprintf(format+"\n", args...) then
+	// re-parses that combined string as a format string with zero args. Any
+	// "%" byte in uri (e.g. RFC7512 percent-encoded ids like "%01", present
+	// in virtually every real pkcs11 URI) gets reinterpreted as a format
+	// verb, corrupting the banner (e.g. "id=%!;(MISSING)..."). Escaping
+	// "%" -> "%%" here makes it survive that second pass as a literal "%".
+	// Not touching shared ui.PrintKeyValue/Info: other call sites depend on
+	// their current single-argument passthrough behavior.
+	ui.PrintKeyValue("  URI", strings.ReplaceAll(uri, "%", "%%"))
 	ui.PrintKeyValue("  OAEP mode", src.OAEPMode)
 	ui.Success("Machine %s is now backed by the on-card key", machineInfo.ID)
 
