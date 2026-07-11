@@ -1,8 +1,17 @@
-.PHONY: build test lint fmt clean install
+.PHONY: build test lint fmt clean install module build-embedded
 
 # Build the binary
 build:
 	go build -o bin/nvolt ./cmd/nvolt
+
+# Compile the self-contained wolfPKCS11 module to the //go:embed path.
+# Set TPM_INTERFACE=swtpm to build without TPM hardware (CI/testing).
+module:
+	build/pkcs11/build-module.sh
+
+# Build nvolt with the wolfPKCS11 module embedded (requires `make module` first).
+build-embedded:
+	go build -tags wolfpkcs11_embed -o bin/nvolt ./cmd/nvolt
 
 # Run tests
 test:
