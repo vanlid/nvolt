@@ -86,11 +86,7 @@ func runPKCS11ListDiscovered() error {
 	}
 
 	for _, m := range mods {
-		// Section prints its argument via %s (no re-parse), but Path/Source go
-		// through PrintKeyValue -> Info which double-formats, so escape "%".
-		ui.Section(m.Label)
-		ui.PrintKeyValue("  Path", strings.ReplaceAll(m.Path, "%", "%%"))
-		ui.PrintKeyValue("  Source", m.Source)
+		printModuleListing(m)
 		if err := runPKCS11List(m.Path); err != nil {
 			ui.Warning("  Skipping %s: %s",
 				strings.ReplaceAll(m.Path, "%", "%%"),
@@ -99,6 +95,17 @@ func runPKCS11ListDiscovered() error {
 	}
 
 	return nil
+}
+
+// printModuleListing renders one discovered module's header: the label at
+// Info (the concise default), and the technical Path/Source at Verbose.
+// ui.Verbose is a single-pass Printf (format+args, no re-parse), so a literal
+// "%" in m.Path/m.Source needs no escaping when passed as a %s argument
+// (unlike ui.PrintKeyValue -> ui.Info below, which double-formats).
+func printModuleListing(m pkcs11.DiscoveredModule) {
+	ui.Section(m.Label)
+	ui.Verbose("  Path: %s", m.Path)
+	ui.Verbose("  Source: %s", m.Source)
 }
 
 // runPKCS11List renders every token found on module, and that token's RSA
@@ -150,9 +157,12 @@ func printTokenListing(tok pkcs11.TokenListing) {
 	}
 
 	for _, k := range tok.Keys {
-		ui.PrintKeyValue("    Label", strings.ReplaceAll(k.Label, "%", "%%"))
-		ui.PrintKeyValue("    ID", fmt.Sprintf("%x", k.ID))
-		ui.PrintKeyValue("    Bits", fmt.Sprintf("%d", k.Bits))
+		// Concise default: just the key's size. ui.Verbose is single-pass, so
+		// the raw (unescaped) ID/Label are correct as %x/%s arguments here —
+		// unlike the ui.PrintKeyValue/Info double-format pattern used above
+		// for the token label.
+		ui.Info("    RSA-%d", k.Bits)
+		ui.Verbose("      ID: %x  Label: %s", k.ID, k.Label)
 		fmt.Println()
 	}
 }
@@ -253,21 +263,16 @@ func enrollPKCS11Machine(module, uri, pinMode string) error {
 		ui.Info("Remove it once you've confirmed the card works: rm %s", homePaths.PrivateKey)
 	}
 
-	ui.Section("PKCS#11 machine identity enrolled")
-	ui.PrintKeyValue("  Machine ID", machineInfo.ID)
-	ui.PrintKeyValue("  Fingerprint", machineInfo.Fingerprint)
-	ui.PrintKeyValue("  Module", strings.ReplaceAll(module, "%", "%%"))
-	// ui.PrintKeyValue -> ui.Info double-formats: PrintKeyValue's own Sprintf
-	// embeds uri literally, but Info's Fprintf(format+"\n", args...) then
-	// re-parses that combined string as a format string with zero args. Any
-	// "%" byte in uri (e.g. RFC7512 percent-encoded ids like "%01", present
-	// in virtually every real pkcs11 URI) gets reinterpreted as a format
-	// verb, corrupting the banner (e.g. "id=%!;(MISSING)..."). Escaping
-	// "%" -> "%%" here makes it survive that second pass as a literal "%".
-	// Not touching shared ui.PrintKeyValue/Info: other call sites depend on
-	// their current single-argument passthrough behavior.
-	ui.PrintKeyValue("  URI", strings.ReplaceAll(uri, "%", "%%"))
-	ui.PrintKeyValue("  OAEP mode", src.OAEPMode)
+	// Technical detail behind --verbose: ui.Verbose is a single-pass Printf
+	// (format+args, no re-parse), so uri/module survive as plain %s
+	// arguments with no escaping needed -- unlike the ui.PrintKeyValue ->
+	// ui.Info double-format pattern used elsewhere in this file, a "%" byte
+	// in uri (e.g. RFC7512 percent-encoded ids like "%01", present in
+	// virtually every real pkcs11 URI) prints literally here.
+	ui.Verbose("  Fingerprint: %s", machineInfo.Fingerprint)
+	ui.Verbose("  Module: %s", module)
+	ui.Verbose("  URI: %s", uri)
+	ui.Verbose("  OAEP mode: %s", src.OAEPMode)
 	ui.Success("Machine %s is now backed by the on-card key", machineInfo.ID)
 
 	return nil
@@ -541,17 +546,17 @@ func runPKCS11Generate(module, token, label, idHex string, bits int, pinMode str
 		return fmt.Errorf("failed to generate RSA keypair: %w", err)
 	}
 
-	// ui.PrintKeyValue -> ui.Info double-formats (see enrollPKCS11Machine above): any
-	// "%" in user-supplied token/label gets reinterpreted as a format verb on
-	// the second pass. Escape "%" -> "%%" on the user-controlled strings
-	// before display; the hex id is already %-safe but escaping it too is
-	// harmless. Numeric bits need no escaping.
-	ui.Section("On-card RSA keypair generated")
-	ui.PrintKeyValue("  Token", ui.Cyan(strings.ReplaceAll(token, "%", "%%")))
-	ui.PrintKeyValue("  Label", strings.ReplaceAll(label, "%", "%%"))
-	ui.PrintKeyValue("  ID", strings.ReplaceAll(fmt.Sprintf("%x", id), "%", "%%"))
-	ui.PrintKeyValue("  Bits", fmt.Sprintf("%d", bits))
-	ui.Success("RSA-%d keypair created on-card (private key non-exportable)", bits)
+	// ui.Success -> ui.Info double-formats (Success's own Sprintf embeds its
+	// args, then Info re-parses the result as a format string with none): any
+	// "%" in the user-supplied token gets reinterpreted as a format verb on
+	// the second pass, so escape "%" -> "%%" on it here. ui.Verbose below is a
+	// single-pass Printf, so Label/ID need no such escaping when passed as
+	// %s/%x arguments.
+	ui.Success("RSA-%d keypair created on-card on token %s (private key non-exportable)",
+		bits, strings.ReplaceAll(token, "%", "%%"))
+	ui.Verbose("  Label: %s", label)
+	ui.Verbose("  ID: %x", id)
+	ui.Verbose("  Bits: %d", bits)
 
 	return nil
 }
@@ -622,10 +627,13 @@ func runPKCS11Import(module, token, label, idHex, keyFile, pinMode string) error
 	if _, err := sess.ImportRSAPrivateKey(label, id, priv); err != nil {
 		return err
 	}
-	// ui.PrintKeyValue -> ui.Info double-formats (see runPKCS11Generate above):
-	// escape "%" -> "%%" on user-controlled strings before display.
+	// ui.Success -> ui.Info double-formats (see runPKCS11Generate above):
+	// escape "%" -> "%%" on the user-controlled token before display. The
+	// ui.Verbose calls below are single-pass Printf (format+args, no
+	// re-parse), so label needs no such escaping when passed as a %s
+	// argument -- escaping it here would print a literal "%%" instead of "%".
 	ui.Success("Imported RSA key onto token %s", strings.ReplaceAll(token, "%", "%%"))
-	ui.Verbose("  Label: %s", strings.ReplaceAll(label, "%", "%%"))
+	ui.Verbose("  Label: %s", label)
 	ui.Verbose("  ID: %x", id)
 	return nil
 }

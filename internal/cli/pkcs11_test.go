@@ -102,26 +102,47 @@ func TestPrintTokenListingShowsEmptyTokenWithGenerateHint(t *testing.T) {
 	}
 }
 
-// TestPrintTokenListingShowsKeysWhenPresent proves a token with keys still
-// renders each key's label/id/bits and does NOT show the empty-token hint.
+// TestPrintTokenListingShowsKeysWhenPresent proves a token with keys renders,
+// at the default (Info) level, the concise "RSA-<bits>" summary per key and
+// never the empty-token hint; the key's full Label/ID are technical detail
+// that only appears once the level is raised to Verbose.
 func TestPrintTokenListingShowsKeysWhenPresent(t *testing.T) {
+	tok := pkcs11.TokenListing{
+		Label: "nvolt-test",
+		Keys: []pkcs11.KeyInfo{
+			{TokenLabel: "nvolt-test", Label: "my-key", ID: []byte{0x01}, Bits: 2048},
+		},
+	}
+
+	ui.SetLevel(ui.LevelInfo)
+	defer ui.SetLevel(ui.LevelInfo)
 	out, err := captureStdout(func() error {
-		printTokenListing(pkcs11.TokenListing{
-			Label: "nvolt-test",
-			Keys: []pkcs11.KeyInfo{
-				{TokenLabel: "nvolt-test", Label: "my-key", ID: []byte{0x01}, Bits: 2048},
-			},
-		})
+		printTokenListing(tok)
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "my-key") || !strings.Contains(out, "2048") {
-		t.Fatalf("expected key details in output:\n%s", out)
+	if !strings.Contains(out, "RSA-2048") {
+		t.Fatalf("expected the concise RSA-2048 summary in default output:\n%s", out)
+	}
+	if strings.Contains(out, "my-key") {
+		t.Fatalf("did not expect the key label at the default (Info) level:\n%s", out)
 	}
 	if strings.Contains(out, "No RSA key yet") {
 		t.Fatalf("did not expect the empty-token hint when keys are present:\n%s", out)
+	}
+
+	ui.SetLevel(ui.LevelVerbose)
+	vout, err := captureStdout(func() error {
+		printTokenListing(tok)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(vout, "my-key") {
+		t.Fatalf("expected the key label at the Verbose level:\n%s", vout)
 	}
 }
 
@@ -144,6 +165,11 @@ func TestEnrollPKCS11Machine(t *testing.T) {
 	t.Setenv("NVOLT_PKCS11_PIN", "1234")
 
 	uri := "pkcs11:token=nvolt-test;id=%01;type=private"
+	// The URI is technical detail (see verbosity_test.go), shown only at
+	// Verbose: raise the level here so this test can still assert on the
+	// literal, uncorrupted URI in the enroll banner (Fix 1).
+	ui.SetLevel(ui.LevelVerbose)
+	defer ui.SetLevel(ui.LevelInfo)
 	out, err := captureStdout(func() error {
 		return enrollPKCS11Machine(mod, uri, "env")
 	})

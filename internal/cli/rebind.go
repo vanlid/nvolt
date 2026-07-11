@@ -77,6 +77,11 @@ func rebindToHardware(mi *types.MachineInfo, identityPub *rsa.PublicKey, homePat
 	if err := vault.SaveMachineInfo(homePaths.MachineInfo, mi); err != nil {
 		return err
 	}
+	// ui.Verbose is single-pass Printf (format+args, no re-parse), so
+	// module/uri need no "%" escaping as %s arguments here.
+	ui.Verbose("  Fingerprint: %s", mi.Fingerprint)
+	ui.Verbose("  Module: %s", module)
+	ui.Verbose("  URI: %s", uri)
 	ui.Success("%s now backed by hardware (PKCS#11)", mi.ID)
 	if vault.FileExists(homePaths.PrivateKey) {
 		ui.Info("Your software private key is still at %s and can still decrypt your secrets.", homePaths.PrivateKey)
@@ -139,6 +144,8 @@ func rebindToSoftware(mi *types.MachineInfo, identityPub *rsa.PublicKey, homePat
 	if err := vault.SaveMachineInfo(homePaths.MachineInfo, mi); err != nil {
 		return err
 	}
+	ui.Verbose("  Fingerprint: %s", mi.Fingerprint)
+	ui.Verbose("  Key path: %s", homePaths.PrivateKey)
 	ui.Success("%s now backed by software", mi.ID)
 	return nil
 }

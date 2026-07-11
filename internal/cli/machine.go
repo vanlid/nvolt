@@ -214,10 +214,10 @@ func runMachineAdd(machineName string, addSource machineAddSource) error {
 		return fmt.Errorf("failed to add machine to vault: %w", err)
 	}
 
-	ui.Success("Machine added successfully")
-	ui.PrintKeyValue("  Machine ID", machineID)
-	ui.PrintKeyValue("  Fingerprint", fingerprint)
 	if privateKeyPEM != nil {
+		ui.Success("Machine added successfully")
+		ui.PrintKeyValue("  Machine ID", machineID)
+		ui.PrintKeyValue("  Fingerprint", fingerprint)
 		ui.Section("Private key (save this securely for the new machine):")
 		fmt.Printf("%s%s%s\n", ui.Gray("---\n"), string(privateKeyPEM), ui.Gray("---"))
 		ui.Section("To use this machine:")
@@ -227,7 +227,17 @@ func runMachineAdd(machineName string, addSource machineAddSource) error {
 	} else {
 		// External source (--pubkey/--pkcs11): the private key never passed
 		// through this process, so there is nothing to distribute — the
-		// target machine already holds it (or its token does).
+		// target machine already holds it (or its token does). Keep the
+		// default output to the registration + grant hint; fingerprint and
+		// the source (pubkey file path / token uri) are technical detail
+		// behind --verbose. ui.Verbose is single-pass Printf (format+args,
+		// no re-parse), so these need no "%" escaping as %s arguments.
+		ui.Verbose("  Fingerprint: %s", fingerprint)
+		if addSource.pubkeyFile != "" {
+			ui.Verbose("  Source: %s", addSource.pubkeyFile)
+		} else if addSource.uri != "" {
+			ui.Verbose("  Source: %s", addSource.uri)
+		}
 		ui.Info("Registered %s", machineID)
 		ui.Info("Grant it access to an environment with: nvolt machine grant %s -e <environment>", machineID)
 	}
