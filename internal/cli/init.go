@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/iluxav/nvolt/internal/git"
+	"github.com/iluxav/nvolt/internal/pkcs11"
 	"github.com/iluxav/nvolt/internal/ui"
 	"github.com/iluxav/nvolt/internal/vault"
 	"github.com/spf13/cobra"
@@ -50,24 +51,26 @@ type pkcs11EnrollOpts struct {
 // flags on init and join.
 func addPKCS11EnrollFlags(cmd *cobra.Command) {
 	cmd.Flags().Bool("pkcs11", false, "Back this machine's identity with a PKCS#11 token instead of a software keypair")
-	cmd.Flags().String("module", os.Getenv("NVOLT_PKCS11_MODULE"), "Path to PKCS#11 module (.so) (with --pkcs11)")
+	cmd.Flags().String("module", "", "Path to PKCS#11 module (.so) (with --pkcs11); autodetected if omitted")
 	cmd.Flags().String("uri", "", "PKCS#11 URI of the RSA key to enroll (with --pkcs11)")
 	cmd.Flags().String("pin-mode", "prompt", "How to obtain the PIN: prompt, env, or none (with --pkcs11)")
 }
 
 // pkcs11OptsFromFlags returns the enrollment options when --pkcs11 is set, or
-// nil when it is not (unchanged software init/join). It validates that the
-// required --module/--uri are present up front.
+// nil when it is not (unchanged software init/join). It resolves the module
+// path (--module, else NVOLT_PKCS11_MODULE, else autodetection) and validates
+// that --uri is present up front.
 func pkcs11OptsFromFlags(cmd *cobra.Command) (*pkcs11EnrollOpts, error) {
 	usePKCS11, _ := cmd.Flags().GetBool("pkcs11")
 	if !usePKCS11 {
 		return nil, nil
 	}
-	module, _ := cmd.Flags().GetString("module")
+	flagModule, _ := cmd.Flags().GetString("module")
 	uri, _ := cmd.Flags().GetString("uri")
 	pinMode, _ := cmd.Flags().GetString("pin-mode")
-	if module == "" {
-		return nil, fmt.Errorf("--pkcs11 requires --module (or NVOLT_PKCS11_MODULE)")
+	module, err := pkcs11.ResolveModulePath(flagModule)
+	if err != nil {
+		return nil, fmt.Errorf("--pkcs11 requires --module: %w", err)
 	}
 	if uri == "" {
 		return nil, fmt.Errorf("--pkcs11 requires --uri")

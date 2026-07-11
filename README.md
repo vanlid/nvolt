@@ -31,6 +31,7 @@
 - **No Authentication**: Uses Git for access control
 - **Cryptographically Enforced**: Access control through wrapped keys
 - **Git-Native**: `.nvolt/` directories act as encrypted, committed `.env` replacements
+- **Hardware-Key Support**: Back a machine identity with a YubiKey or other PKCS#11 token - the private key never leaves the device
 - **$0/month**: Free forever, no usage limits
 
 ## Why nvolt?
@@ -131,6 +132,7 @@ nvolt init --repo org/secrets-repo
 **Flags:**
 
 - `--repo` - GitHub repository URL for global vault
+- `--pkcs11` - Back this machine's identity with a PKCS#11 hardware token instead of a software keypair (see [Using a hardware key](#using-a-hardware-key-pkcs11))
 
 ---
 
@@ -151,6 +153,7 @@ nvolt join --repo org/secrets-repo
 **Flags:**
 
 - `--repo` - GitHub repository URL for global vault
+- `--pkcs11` - Back this machine's identity with a PKCS#11 hardware token instead of a software keypair (see [Using a hardware key](#using-a-hardware-key-pkcs11))
 
 **Note:** After joining, you'll need someone with push access to grant your machine access to specific environments using `nvolt machine grant <your-machine-id>`.
 
@@ -302,6 +305,37 @@ nvolt sync --rotate
 **Flags:**
 
 - `--rotate` - Rotate the master encryption key
+
+---
+
+### `nvolt pkcs11`
+
+Discover and use RSA keys stored on a PKCS#11 hardware token (YubiKey, SoftHSM, etc.).
+
+```bash
+# List RSA keys visible on the token
+nvolt pkcs11 list
+
+# Enroll an on-card key as this machine's identity
+nvolt pkcs11 use --uri 'pkcs11:token=my-yubikey;id=%01;type=private'
+
+# Generate a new RSA keypair on the token
+nvolt pkcs11 generate --token my-yubikey --label my-key --id 01 --bits 2048
+```
+
+**Flags:**
+
+- `--module` - Path to the PKCS#11 module (`.so` on Linux/macOS, `.dll` on Windows). Optional - nvolt autodetects common OpenSC/YubiKey install locations; pass this (or set `NVOLT_PKCS11_MODULE`) to override
+- `--uri` - PKCS#11 URI of the RSA key to enroll (required for `use`)
+- `--pin-mode` - How to obtain the PIN: `prompt`, `env`, or `none` (default: `prompt`)
+
+## Using a hardware key (PKCS#11)
+
+nvolt can back a machine's identity with a hardware token instead of a software keypair - the private key is generated on (or imported to) the device and never leaves it. Signing and unwrap operations happen on-card via PKCS#11; nvolt only ever sees the public key.
+
+The PKCS#11 module is autodetected from common OpenSC and YubiKey install locations, so `--module` is usually not needed. If nvolt can't find a module (or you want a specific one), pass `--module /path/to/opensc-pkcs11.so` on Linux/macOS or `--module 'C:\Program Files\OpenSC Project\OpenSC\pkcs11\opensc-pkcs11.dll'` on Windows, or set `NVOLT_PKCS11_MODULE` once in your shell profile.
+
+By default nvolt prompts for the token PIN with no terminal echo. Use `--pin-mode env` (reads `NVOLT_PKCS11_PIN`) for non-interactive setups like CI, or `--pin-mode none` for tokens that don't require a PIN for the operation being performed.
 
 ## Security
 

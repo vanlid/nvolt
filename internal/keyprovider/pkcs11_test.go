@@ -1,18 +1,15 @@
 package keyprovider
 
 import (
-	"os"
 	"strings"
 	"testing"
 
+	"github.com/iluxav/nvolt/internal/hsmtest"
 	"github.com/iluxav/nvolt/pkg/types"
 )
 
 func TestEnrollValidatesAndSelfTests(t *testing.T) {
-	mod := os.Getenv("NVOLT_TEST_PKCS11_MODULE")
-	if mod == "" {
-		t.Skip("no module")
-	}
+	mod := hsmtest.Provision(t)
 	src, pub, err := Enroll(mod, "pkcs11:token=nvolt-test;id=%01;type=private", "env",
 		func() (string, error) { return "1234", nil })
 	if err != nil {
@@ -33,10 +30,7 @@ func TestEnrollValidatesAndSelfTests(t *testing.T) {
 // or misconfigured sub-2048 RSA key could be enrolled and used for key
 // wrapping despite being cryptographically too weak.
 func TestEnrollRejectsSub2048Key(t *testing.T) {
-	mod := os.Getenv("NVOLT_TEST_PKCS11_MODULE")
-	if mod == "" {
-		t.Skip("no module")
-	}
+	mod := hsmtest.Provision(t)
 	src, pub, err := Enroll(mod, "pkcs11:token=nvolt-test;id=%02;type=private", "env",
 		func() (string, error) { return "1234", nil })
 	if err == nil {
@@ -63,10 +57,7 @@ func TestEnrollRejectsSub2048Key(t *testing.T) {
 // require login, so FindRSAPrivateKey fails without one) — the assertion here
 // is only that it returns rather than panics.
 func TestEnrollPinModeNoneDoesNotPanic(t *testing.T) {
-	mod := os.Getenv("NVOLT_TEST_PKCS11_MODULE")
-	if mod == "" {
-		t.Skip("no module")
-	}
+	mod := hsmtest.Provision(t)
 	defer func() {
 		if r := recover(); r != nil {
 			t.Fatalf("panicked: %v", r)

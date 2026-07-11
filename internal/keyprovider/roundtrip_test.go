@@ -8,6 +8,7 @@ import (
 	"time"
 
 	nvcrypto "github.com/iluxav/nvolt/internal/crypto"
+	"github.com/iluxav/nvolt/internal/hsmtest"
 	"github.com/iluxav/nvolt/internal/vault"
 	"github.com/iluxav/nvolt/pkg/types"
 )
@@ -32,12 +33,14 @@ import (
 // Open/Close — so a clean child process faithfully mirrors production and keeps
 // this test deterministic regardless of test ordering.
 func TestPushPullThroughPKCS11Machine(t *testing.T) {
-	mod := os.Getenv("NVOLT_TEST_PKCS11_MODULE")
-	if mod == "" {
-		t.Skip("set NVOLT_TEST_PKCS11_MODULE to run PKCS#11 round-trip test")
-	}
-
 	if os.Getenv("NVOLT_ROUNDTRIP_CHILD") != "1" {
+		// Provision in the parent: it sets SOFTHSM2_CONF (via t.Setenv) and
+		// creates the fixture token/keys under that temp dir. The child
+		// below inherits both through os.Environ(), so it must NOT
+		// provision again (that would spin up a second, disconnected
+		// SOFTHSM2_CONF/token and leave the inherited one unused).
+		hsmtest.Provision(t)
+
 		cmd := exec.Command(os.Args[0], "-test.run", "^TestPushPullThroughPKCS11Machine$", "-test.v")
 		cmd.Env = append(os.Environ(), "NVOLT_ROUNDTRIP_CHILD=1")
 		out, err := cmd.CombinedOutput()
@@ -45,6 +48,14 @@ func TestPushPullThroughPKCS11Machine(t *testing.T) {
 			t.Fatalf("round-trip child process failed: %v\n%s", err, out)
 		}
 		return
+	}
+
+	// Child process: NVOLT_TEST_PKCS11_MODULE and SOFTHSM2_CONF were
+	// inherited from the parent's environment (set by hsmtest.Provision
+	// above), which already provisioned the fixture token/keys.
+	mod := os.Getenv("NVOLT_TEST_PKCS11_MODULE")
+	if mod == "" {
+		t.Skip("set NVOLT_TEST_PKCS11_MODULE to run PKCS#11 round-trip test")
 	}
 
 	t.Setenv("HOME", t.TempDir())

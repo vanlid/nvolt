@@ -1,16 +1,16 @@
 package pkcs11
 
 import (
-	"os"
 	"testing"
+
+	"github.com/iluxav/nvolt/internal/hsmtest"
 )
 
+// testModulePath provisions the shared SoftHSM fixture token (see
+// internal/hsmtest) and returns the PKCS#11 module path, skipping the test
+// cleanly when PKCS#11 integration tests aren't configured/available.
 func testModulePath(t *testing.T) string {
-	p := os.Getenv("NVOLT_TEST_PKCS11_MODULE")
-	if p == "" {
-		t.Skip("set NVOLT_TEST_PKCS11_MODULE to run PKCS#11 integration tests")
-	}
-	return p
+	return hsmtest.Provision(t)
 }
 
 func TestOpenReturnsModuleWithFunctionList(t *testing.T) {

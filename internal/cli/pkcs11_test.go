@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/iluxav/nvolt/internal/hsmtest"
 	"github.com/iluxav/nvolt/internal/ui"
 	"github.com/iluxav/nvolt/internal/vault"
 	"github.com/iluxav/nvolt/pkg/types"
@@ -53,14 +54,11 @@ func captureStdout(f func() error) (string, error) {
 }
 
 // TestPKCS11ListShowsKeys drives runPKCS11List (the pkcs11 list command's
-// RunE body) against a real SoftHSM fixture token and asserts the fixture
-// key label appears in the rendered output. Skipped unless
-// NVOLT_TEST_PKCS11_MODULE is set (see scripts/test-softhsm-setup.sh).
+// RunE body) against a real SoftHSM fixture token (provisioned in-code by
+// internal/hsmtest) and asserts the fixture key label appears in the
+// rendered output. Skipped unless NVOLT_TEST_PKCS11_MODULE is set.
 func TestPKCS11ListShowsKeys(t *testing.T) {
-	mod := os.Getenv("NVOLT_TEST_PKCS11_MODULE")
-	if mod == "" {
-		t.Skip("set NVOLT_TEST_PKCS11_MODULE to run PKCS#11 CLI integration test")
-	}
+	mod := hsmtest.Provision(t)
 
 	out, err := captureStdout(func() error {
 		return runPKCS11List(mod)
@@ -73,25 +71,19 @@ func TestPKCS11ListShowsKeys(t *testing.T) {
 	}
 }
 
-func TestPKCS11ListRequiresModule(t *testing.T) {
-	out, err := captureStdout(func() error {
-		return runPKCS11List("")
-	})
-	if err == nil {
-		t.Fatalf("expected error for empty module, got output:\n%s", out)
-	}
-}
+// Module resolution (flag -> NVOLT_PKCS11_MODULE -> autodetect -> not-found
+// error) is covered by pkcs11.ResolveModulePath's unit tests in
+// internal/pkcs11/autodetect_test.go, so there is no CLI-level "requires
+// module" test here: with autodetection, an empty --module is no longer an
+// error when a module can be resolved from the environment or common paths.
 
 // TestUseEnrollsPKCS11Machine drives runPKCS11Use (the pkcs11 use command's
-// RunE body) against a real SoftHSM fixture token and asserts the resulting
-// machine-info.json records the on-card key as this machine's identity.
-// Skipped unless NVOLT_TEST_PKCS11_MODULE is set (see
-// scripts/test-softhsm-setup.sh).
+// RunE body) against a real SoftHSM fixture token (provisioned in-code by
+// internal/hsmtest) and asserts the resulting machine-info.json records the
+// on-card key as this machine's identity. Skipped unless
+// NVOLT_TEST_PKCS11_MODULE is set.
 func TestUseEnrollsPKCS11Machine(t *testing.T) {
-	mod := os.Getenv("NVOLT_TEST_PKCS11_MODULE")
-	if mod == "" {
-		t.Skip("set NVOLT_TEST_PKCS11_MODULE to run PKCS#11 CLI integration test")
-	}
+	mod := hsmtest.Provision(t)
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("NVOLT_PKCS11_PIN", "1234")
 
@@ -113,10 +105,7 @@ func TestUseEnrollsPKCS11Machine(t *testing.T) {
 // TestUseRefusesToOverwriteWithoutForce proves runPKCS11Use guards against
 // clobbering an already-initialized machine identity unless --force is set.
 func TestUseRefusesToOverwriteWithoutForce(t *testing.T) {
-	mod := os.Getenv("NVOLT_TEST_PKCS11_MODULE")
-	if mod == "" {
-		t.Skip("set NVOLT_TEST_PKCS11_MODULE to run PKCS#11 CLI integration test")
-	}
+	mod := hsmtest.Provision(t)
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("NVOLT_PKCS11_PIN", "1234")
 
@@ -148,10 +137,7 @@ func TestUseRefusesToOverwriteWithoutForce(t *testing.T) {
 // hygiene bug). It also exercises the literal-URI banner fix (Fix 1) via
 // percentEscapeForUI below.
 func TestUseForceOverSoftwareMachineRemovesPrivateKey(t *testing.T) {
-	mod := os.Getenv("NVOLT_TEST_PKCS11_MODULE")
-	if mod == "" {
-		t.Skip("set NVOLT_TEST_PKCS11_MODULE to run PKCS#11 CLI integration test")
-	}
+	mod := hsmtest.Provision(t)
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("NVOLT_PKCS11_PIN", "1234")
 

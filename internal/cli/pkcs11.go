@@ -48,15 +48,15 @@ exposes without a PIN.
 Example:
   nvolt pkcs11 list --module /usr/lib/softhsm/libsofthsm2.so`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runPKCS11List(pkcs11Module)
+		module, err := pkcs11.ResolveModulePath(pkcs11Module)
+		if err != nil {
+			return err
+		}
+		return runPKCS11List(module)
 	},
 }
 
 func runPKCS11List(module string) error {
-	if module == "" {
-		return fmt.Errorf("no PKCS#11 module specified; use --module or set NVOLT_PKCS11_MODULE")
-	}
-
 	keys, err := pkcs11.ListRSAKeys(module)
 	if err != nil {
 		return fmt.Errorf("failed to list PKCS#11 keys: %w", err)
@@ -97,7 +97,11 @@ Example:
   nvolt pkcs11 use --module /usr/lib/softhsm/libsofthsm2.so \
     --uri 'pkcs11:token=nvolt-test;id=%01;type=private' --pin-mode prompt`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runPKCS11Use(pkcs11UseModule, pkcs11UseURI, pkcs11UsePinMode, pkcs11UseForce)
+		module, err := pkcs11.ResolveModulePath(pkcs11UseModule)
+		if err != nil {
+			return err
+		}
+		return runPKCS11Use(module, pkcs11UseURI, pkcs11UsePinMode, pkcs11UseForce)
 	},
 }
 
@@ -212,16 +216,17 @@ Example:
   nvolt pkcs11 generate --module /usr/lib/softhsm/libsofthsm2.so \
     --token nvolt-test --label my-key --id 03 --bits 2048`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runPKCS11Generate(pkcs11GenModule, pkcs11GenToken, pkcs11GenLabel, pkcs11GenID, pkcs11GenBits, pkcs11GenPinMode)
+		module, err := pkcs11.ResolveModulePath(pkcs11GenModule)
+		if err != nil {
+			return err
+		}
+		return runPKCS11Generate(module, pkcs11GenToken, pkcs11GenLabel, pkcs11GenID, pkcs11GenBits, pkcs11GenPinMode)
 	},
 }
 
 // runPKCS11Generate opens a session on the named token, logs in, and generates
 // an RSA keypair on-card via C_GenerateKeyPair.
 func runPKCS11Generate(module, token, label, idHex string, bits int, pinMode string) error {
-	if module == "" {
-		return fmt.Errorf("no PKCS#11 module specified; use --module or set NVOLT_PKCS11_MODULE")
-	}
 	if token == "" {
 		return fmt.Errorf("no PKCS#11 token specified; use --token")
 	}
@@ -282,17 +287,17 @@ func runPKCS11Generate(module, token, label, idHex string, bits int, pinMode str
 
 func init() {
 	pkcs11Cmd.AddCommand(pkcs11ListCmd)
-	pkcs11ListCmd.Flags().StringVar(&pkcs11Module, "module", os.Getenv("NVOLT_PKCS11_MODULE"), "Path to PKCS#11 module (.so)")
+	pkcs11ListCmd.Flags().StringVar(&pkcs11Module, "module", "", "Path to PKCS#11 module (.so); autodetected if omitted")
 
 	pkcs11Cmd.AddCommand(pkcs11UseCmd)
-	pkcs11UseCmd.Flags().StringVar(&pkcs11UseModule, "module", os.Getenv("NVOLT_PKCS11_MODULE"), "Path to PKCS#11 module (.so)")
+	pkcs11UseCmd.Flags().StringVar(&pkcs11UseModule, "module", "", "Path to PKCS#11 module (.so); autodetected if omitted")
 	pkcs11UseCmd.Flags().StringVar(&pkcs11UseURI, "uri", "", "PKCS#11 URI of the RSA key to enroll (required)")
 	pkcs11UseCmd.Flags().StringVar(&pkcs11UsePinMode, "pin-mode", "prompt", "How to obtain the PIN: prompt, env, or none")
 	pkcs11UseCmd.Flags().BoolVar(&pkcs11UseForce, "force", false, "Overwrite an existing machine identity")
 	_ = pkcs11UseCmd.MarkFlagRequired("uri")
 
 	pkcs11Cmd.AddCommand(pkcs11GenerateCmd)
-	pkcs11GenerateCmd.Flags().StringVar(&pkcs11GenModule, "module", os.Getenv("NVOLT_PKCS11_MODULE"), "Path to PKCS#11 module (.so)")
+	pkcs11GenerateCmd.Flags().StringVar(&pkcs11GenModule, "module", "", "Path to PKCS#11 module (.so); autodetected if omitted")
 	pkcs11GenerateCmd.Flags().StringVar(&pkcs11GenToken, "token", "", "Token label to generate the key on (required)")
 	pkcs11GenerateCmd.Flags().StringVar(&pkcs11GenLabel, "label", "", "CKA_LABEL for the new key (required)")
 	pkcs11GenerateCmd.Flags().StringVar(&pkcs11GenID, "id", "", "CKA_ID for the new key, hex (e.g. 03) (required)")
