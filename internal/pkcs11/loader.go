@@ -22,6 +22,11 @@ type Module struct {
 	// still denotes a live pointer.
 	fnList unsafe.Pointer
 
+	// headerOffset is the byte offset of the first function pointer within
+	// CK_FUNCTION_LIST, detected at Open (see detectHeaderOffset) rather than
+	// assumed per platform.
+	headerOffset int
+
 	initOnce    sync.Once
 	initErr     error
 	initialized bool
@@ -60,7 +65,31 @@ func Open(path string) (*Module, error) {
 		_ = dlclose(handle)
 		return nil, fmt.Errorf("C_GetFunctionList: %s", CKRV(rv))
 	}
-	return &Module{handle: handle, fnList: fnList}, nil
+	offset, err := detectHeaderOffset(fnList, sym)
+	if err != nil {
+		_ = dlclose(handle)
+		return nil, fmt.Errorf("%q: %w", path, err)
+	}
+	return &Module{handle: handle, fnList: fnList, headerOffset: offset}, nil
+}
+
+// detectHeaderOffset finds the byte offset of the function-pointer array inside
+// CK_FUNCTION_LIST. The struct begins with a 2-byte CK_VERSION; how much
+// padding follows depends on how the module's Cryptoki headers were compiled —
+// naturally aligned (offset 8) or #pragma pack(1), as on Windows (offset 2).
+// Rather than assume per platform, we use the fact that the list itself holds a
+// pointer to C_GetFunctionList, which must equal the address we just called
+// (sym): the correct offset is the one whose C_GetFunctionList entry matches.
+// Both candidate reads are well within the (far larger) list, so probing never
+// dereferences out of bounds.
+func detectHeaderOffset(fnList unsafe.Pointer, sym uintptr) (int, error) {
+	for _, off := range []int{8, 2} {
+		arr := (*[80]uintptr)(unsafe.Add(fnList, off))
+		if arr[idxGetFunctionList] == sym {
+			return off, nil
+		}
+	}
+	return 0, fmt.Errorf("could not resolve CK_FUNCTION_LIST layout: C_GetFunctionList entry did not match the module symbol")
 }
 
 // Close finalizes the library (if initialized) and releases the module handle.
