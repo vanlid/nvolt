@@ -318,8 +318,9 @@ func loadPKCS11Decrypter(src types.KeySource) (crypto.Decrypter, func() error, e
 
 // resolvePIN returns the PIN for the given pin_mode. It delegates entirely to
 // internal/pinentry.Read, which implements the identical "env"/"prompt"/
-// "none" logic used at enroll time (`nvolt pkcs11 use`); kept as its own
-// function since internal/keyprovider call sites reference resolvePIN by name.
+// "none" logic used at enroll time (init/join --pkcs11, `nvolt rebind
+// --pkcs11`); kept as its own function since internal/keyprovider call sites
+// reference resolvePIN by name.
 func resolvePIN(mode string) (string, error) {
 	return pinentry.Read(mode)
 }

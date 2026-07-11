@@ -132,19 +132,20 @@ func TestPrintTokenListingShowsKeysWhenPresent(t *testing.T) {
 // longer an error when a module can be resolved from the environment or
 // common paths.
 
-// TestUseEnrollsPKCS11Machine drives runPKCS11Use (the pkcs11 use command's
-// RunE body) against a real SoftHSM fixture token (provisioned in-code by
-// internal/hsmtest) and asserts the resulting machine-info.json records the
-// on-card key as this machine's identity. Skipped unless
-// NVOLT_TEST_PKCS11_MODULE is set.
-func TestUseEnrollsPKCS11Machine(t *testing.T) {
+// TestEnrollPKCS11Machine drives enrollPKCS11Machine (the shared enroll body
+// used by the --pkcs11 branch of init/join, formerly also `nvolt pkcs11
+// use` before that command was removed) against a real SoftHSM fixture token
+// (provisioned in-code by internal/hsmtest) and asserts the resulting
+// machine-info.json records the on-card key as this machine's identity.
+// Skipped unless NVOLT_TEST_PKCS11_MODULE is set.
+func TestEnrollPKCS11Machine(t *testing.T) {
 	mod := hsmtest.Provision(t)
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("NVOLT_PKCS11_PIN", "1234")
 
 	uri := "pkcs11:token=nvolt-test;id=%01;type=private"
 	out, err := captureStdout(func() error {
-		return runPKCS11Use(mod, uri, "env")
+		return enrollPKCS11Machine(mod, uri, "env")
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -168,27 +169,68 @@ func TestUseEnrollsPKCS11Machine(t *testing.T) {
 	}
 }
 
-// TestUseRefusesToOverwriteExistingIdentity proves runPKCS11Use never clobbers
-// an already-initialized machine identity. Replacing one is a deliberate manual
-// step (remove machine-info.json), not a flag: overwriting would orphan every
-// secret wrapped to the current key, since the master key is not re-wrapped.
-func TestUseRefusesToOverwriteExistingIdentity(t *testing.T) {
+// TestEnrollPKCS11MachineRefusesToOverwriteExistingIdentity proves
+// enrollPKCS11Machine never clobbers an already-initialized machine identity.
+// Replacing one is a deliberate manual step (remove machine-info.json), not a
+// flag: overwriting would orphan every secret wrapped to the current key,
+// since the master key is not re-wrapped.
+func TestEnrollPKCS11MachineRefusesToOverwriteExistingIdentity(t *testing.T) {
 	mod := hsmtest.Provision(t)
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("NVOLT_PKCS11_PIN", "1234")
 
 	uri := "pkcs11:token=nvolt-test;id=%01;type=private"
 	if _, err := captureStdout(func() error {
-		return runPKCS11Use(mod, uri, "env")
+		return enrollPKCS11Machine(mod, uri, "env")
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	out, err := captureStdout(func() error {
-		return runPKCS11Use(mod, uri, "env")
+		return enrollPKCS11Machine(mod, uri, "env")
 	})
 	if err == nil {
 		t.Fatalf("expected error re-enrolling over an existing identity, got output:\n%s", out)
+	}
+}
+
+// TestEnrollPKCS11MachineInformsAboutOrphanedSoftwareKeyInsteadOfDeleting
+// covers the partial-init state the orphan-cleanup branch in
+// enrollPKCS11Machine handles: a stray private_key.pem left on disk (e.g.
+// from a half-finished software init) with no machine-info.json yet. Per the
+// non-destructive principle nvolt commands share (also followed by `nvolt
+// rebind`), enrollPKCS11Machine must never delete that file on the user's
+// behalf -- only inform about it -- so after enrolling, the file must still
+// exist.
+func TestEnrollPKCS11MachineInformsAboutOrphanedSoftwareKeyInsteadOfDeleting(t *testing.T) {
+	mod := hsmtest.Provision(t)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("NVOLT_PKCS11_PIN", "1234")
+
+	homePaths, err := vault.GetHomePaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vault.InitializeHomeDirectory(); err != nil {
+		t.Fatal(err)
+	}
+	if err := vault.WriteFileAtomic(homePaths.PrivateKey, []byte("stray software key"), vault.FilePerm); err != nil {
+		t.Fatal(err)
+	}
+
+	uri := "pkcs11:token=nvolt-test;id=%01;type=private"
+	out, err := captureStdout(func() error {
+		return enrollPKCS11Machine(mod, uri, "env")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !vault.FileExists(homePaths.PrivateKey) {
+		t.Fatalf("expected the stray software private key at %s to still exist (inform, not delete)", homePaths.PrivateKey)
+	}
+	if !strings.Contains(out, homePaths.PrivateKey) {
+		t.Fatalf("expected enroll output to mention the remaining software key path %s, got:\n%s", homePaths.PrivateKey, out)
 	}
 }
 

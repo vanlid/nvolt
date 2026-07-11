@@ -52,7 +52,7 @@ type pkcs11EnrollOpts struct {
 // the same on every command.
 // There is intentionally no --force here: re-running init on an already-enrolled
 // PKCS#11 machine is idempotent, and replacing a software identity with a
-// hardware one is done explicitly via `nvolt pkcs11 use --force`.
+// hardware one (or vice versa) is done explicitly via `nvolt rebind --pkcs11`.
 func addPKCS11EnrollFlags(cmd *cobra.Command) {
 	cmd.Flags().Bool("pkcs11", false, "Back this machine's identity with a PKCS#11 token instead of a software keypair")
 	cmd.Flags().String("pkcs11-module", "", "Path to PKCS#11 module (.so) (with --pkcs11); autodetected if omitted")
@@ -62,10 +62,10 @@ func addPKCS11EnrollFlags(cmd *cobra.Command) {
 
 // pkcs11OptsFromFlags returns the enrollment options when --pkcs11 is set, or
 // nil when it is not (unchanged software init/join). It delegates module/URI
-// resolution to resolveEnrollTarget (the same helper `nvolt pkcs11 use`
-// uses): explicit --pkcs11-module/--pkcs11-uri (or NVOLT_PKCS11_MODULE)
-// resolve with no prompting, and anything left unspecified falls back to
-// autodetection or, on a terminal, the interactive module/token/key wizard.
+// resolution to resolveEnrollTarget: explicit --pkcs11-module/--pkcs11-uri
+// (or NVOLT_PKCS11_MODULE) resolve with no prompting, and anything left
+// unspecified falls back to autodetection or, on a terminal, the interactive
+// module/token/key wizard.
 func pkcs11OptsFromFlags(cmd *cobra.Command) (*pkcs11EnrollOpts, error) {
 	usePKCS11, _ := cmd.Flags().GetBool("pkcs11")
 	if !usePKCS11 {

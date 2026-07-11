@@ -1,10 +1,10 @@
 // Package pinentry resolves a PKCS#11 PIN from the configured pin_mode.
 //
 // It is deliberately a leaf package (stdlib + golang.org/x/term only) so
-// both internal/cli (enrollment via `nvolt pkcs11 use`) and
-// internal/keyprovider (runtime unwrap via resolvePIN) can import it without
-// creating an import cycle: internal/cli already imports internal/keyprovider,
-// so PIN entry cannot live in internal/cli.
+// both internal/cli (enrollment via init/join --pkcs11 and `nvolt rebind
+// --pkcs11`) and internal/keyprovider (runtime unwrap via resolvePIN) can
+// import it without creating an import cycle: internal/cli already imports
+// internal/keyprovider, so PIN entry cannot live in internal/cli.
 package pinentry
 
 import (

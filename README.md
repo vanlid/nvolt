@@ -316,10 +316,14 @@ Discover and use RSA keys stored on a PKCS#11 hardware token (YubiKey, SoftHSM, 
 # List RSA keys visible on the token
 nvolt pkcs11 list
 
-# Enroll an on-card key as this machine's identity.
-# With no flags, this walks you through picking a token and key;
+# Enroll an on-card key as a *new* machine's identity (fresh init/join):
+# with no flags, this walks you through picking a token and key;
 # or name the key directly with --pkcs11-uri:
-nvolt pkcs11 use --pkcs11-uri 'pkcs11:token=my-yubikey;id=%01;type=private'
+nvolt init --pkcs11 --pkcs11-uri 'pkcs11:token=my-yubikey;id=%01;type=private'
+
+# Already have a machine? Swap its existing identity onto the same
+# key's hardware/software backing with `nvolt rebind` instead:
+nvolt rebind --pkcs11 --pkcs11-uri 'pkcs11:token=my-yubikey;id=%01;type=private'
 
 # Generate a new RSA keypair on the token
 nvolt pkcs11 generate --token my-yubikey --label my-key --id 01 --bits 2048
@@ -328,7 +332,7 @@ nvolt pkcs11 generate --token my-yubikey --label my-key --id 01 --bits 2048
 **Flags:**
 
 - `--pkcs11-module` - Path to the PKCS#11 module (`.so` on Linux/macOS, `.dll` on Windows). Optional: nvolt autodetects common OpenSC/YubiKey locations, so you only need this (or `NVOLT_PKCS11_MODULE`) to override
-- `--pkcs11-uri` - PKCS#11 URI of the RSA key to enroll (required for `use`)
+- `--pkcs11-uri` - PKCS#11 URI of the RSA key to enroll (required for `init/join --pkcs11` and `rebind --pkcs11` when not picked interactively)
 - `--pkcs11-pin-mode` - How to obtain the PIN: `prompt`, `env`, or `none` (default: `prompt`)
 
 ## Using a hardware key (PKCS#11)

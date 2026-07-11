@@ -28,9 +28,6 @@ func ReadTokenPublicKey(module, uri string) (*rsa.PublicKey, error) {
 }
 
 var pkcs11Module string
-var pkcs11UseModule string
-var pkcs11UseURI string
-var pkcs11UsePinMode string
 
 var pkcs11GenModule string
 var pkcs11GenToken string
@@ -160,42 +157,14 @@ func printTokenListing(tok pkcs11.TokenListing) {
 	}
 }
 
-var pkcs11UseCmd = &cobra.Command{
-	Use:   "use",
-	Short: "Enroll an on-card RSA key as this machine's identity",
-	Long: `Enroll an RSA key stored on a PKCS#11 token (YubiKey, SoftHSM, etc.)
-as this machine's identity, replacing the usual software keypair.
-
-nvolt validates the token key (RSA >= 2048 bits, OAEP-SHA256 unwrap support)
-before persisting anything, then records the module/URI/PIN-mode/OAEP-mode
-in machine-info.json so pull/push know how to reach the key at runtime.
-
-Example (non-interactive, for scripts/CI):
-  nvolt pkcs11 use --pkcs11-module /usr/lib/softhsm/libsofthsm2.so \
-    --pkcs11-uri 'pkcs11:token=nvolt-test;id=%01;type=private' --pkcs11-pin-mode prompt
-
-Run with no --pkcs11-module/--pkcs11-uri from a terminal to pick module -> token -> key
-interactively instead.`,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		module, uri, err := resolveEnrollTarget(pkcs11UseModule, pkcs11UseURI)
-		if err != nil {
-			return err
-		}
-		return runPKCS11Use(module, uri, pkcs11UsePinMode)
-	},
-}
-
-// runPKCS11Use is the `nvolt pkcs11 use` command body; it delegates to the
-// shared enrollPKCS11Machine so init/join --pkcs11 run the identical flow.
-func runPKCS11Use(module, uri, pinMode string) error {
-	return enrollPKCS11Machine(module, uri, pinMode)
-}
-
 // enrollPKCS11Machine enrolls the on-card key at uri (via module) as this
 // machine's identity, mirroring vault.InitializeMachine's machine-info
 // construction but sourcing the keypair from the token instead of generating a
-// software one. It is the single enroll implementation shared by
-// `nvolt pkcs11 use` and the --pkcs11 branch of init/join.
+// software one. It is the fresh-enrollment path used by the --pkcs11 branch
+// of init/join (via ensurePKCS11MachineInitialized); `nvolt rebind --pkcs11`
+// swaps an already-enrolled machine's backing and calls keyprovider.Enroll
+// directly instead, since it must preserve the existing machine-info rather
+// than create a new identity.
 func enrollPKCS11Machine(module, uri, pinMode string) error {
 	if module == "" {
 		return fmt.Errorf("no PKCS#11 module specified; use --pkcs11-module or set NVOLT_PKCS11_MODULE")
@@ -275,13 +244,13 @@ func enrollPKCS11Machine(module, uri, pinMode string) error {
 
 	// We only reach here when no machine-info existed, but a stray software
 	// private_key.pem can still be on disk from a half-finished software init.
-	// A PKCS#11-backed machine keeps no local private key, so remove it: a
-	// lingering plaintext key would undermine moving the identity to hardware.
+	// The identity is now backed by the card, so nothing needs that file
+	// anymore, but nvolt never deletes a user's key file on their behalf
+	// (same non-destructive principle as `nvolt rebind`): inform instead, and
+	// let the user remove it once they've confirmed the card works.
 	if vault.FileExists(homePaths.PrivateKey) {
-		if err := vault.SecureDeleteFile(homePaths.PrivateKey); err != nil {
-			return fmt.Errorf("failed to remove orphaned software private key: %w", err)
-		}
-		ui.Info("Removed orphaned software private key %s (identity now backed by PKCS#11)", homePaths.PrivateKey)
+		ui.Info("A software private key remains at %s; it can still decrypt your secrets.", homePaths.PrivateKey)
+		ui.Info("Remove it once you've confirmed the card works: rm %s", homePaths.PrivateKey)
 	}
 
 	ui.Section("PKCS#11 machine identity enrolled")
@@ -320,7 +289,7 @@ func isInteractive() bool {
 }
 
 // resolveEnrollTarget resolves the PKCS#11 module path and key URI to enroll
-// for `nvolt pkcs11 use` and the --pkcs11 branch of init/join. Explicit flags
+// for the --pkcs11 branch of init/join. Explicit flags
 // (or NVOLT_PKCS11_MODULE for the module) always win and never prompt, so the
 // fully-explicit `--pkcs11-module X --pkcs11-uri Y` invocation behaves exactly as before
 // with no TTY required. Only what is left unspecified falls back to
@@ -572,7 +541,7 @@ func runPKCS11Generate(module, token, label, idHex string, bits int, pinMode str
 		return fmt.Errorf("failed to generate RSA keypair: %w", err)
 	}
 
-	// ui.PrintKeyValue -> ui.Info double-formats (see runPKCS11Use above): any
+	// ui.PrintKeyValue -> ui.Info double-formats (see enrollPKCS11Machine above): any
 	// "%" in user-supplied token/label gets reinterpreted as a format verb on
 	// the second pass. Escape "%" -> "%%" on the user-controlled strings
 	// before display; the hex id is already %-safe but escaping it too is
@@ -664,11 +633,6 @@ func runPKCS11Import(module, token, label, idHex, keyFile, pinMode string) error
 func init() {
 	pkcs11Cmd.AddCommand(pkcs11ListCmd)
 	pkcs11ListCmd.Flags().StringVar(&pkcs11Module, "pkcs11-module", "", "Path to PKCS#11 module (.so); autodetected if omitted")
-
-	pkcs11Cmd.AddCommand(pkcs11UseCmd)
-	pkcs11UseCmd.Flags().StringVar(&pkcs11UseModule, "pkcs11-module", "", "Path to PKCS#11 module (.so); autodetected if omitted")
-	pkcs11UseCmd.Flags().StringVar(&pkcs11UseURI, "pkcs11-uri", "", "PKCS#11 URI of the RSA key to enroll; omit on a terminal to pick interactively")
-	pkcs11UseCmd.Flags().StringVar(&pkcs11UsePinMode, "pkcs11-pin-mode", "prompt", "How to obtain the PIN: prompt, env, or none")
 
 	pkcs11Cmd.AddCommand(pkcs11GenerateCmd)
 	pkcs11GenerateCmd.Flags().StringVar(&pkcs11GenModule, "pkcs11-module", "", "Path to PKCS#11 module (.so); autodetected if omitted")
