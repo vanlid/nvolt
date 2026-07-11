@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 const (
@@ -116,11 +117,27 @@ func verifyFilePermissions(path string, expectedPerm fs.FileMode) error {
 	}
 
 	actualPerm := info.Mode().Perm()
-	if actualPerm != expectedPerm {
+	if !permsEqual(actualPerm, expectedPerm, runtime.GOOS) {
 		return fmt.Errorf("unexpected permissions: got %o, want %o", actualPerm, expectedPerm)
 	}
 
 	return nil
+}
+
+// permsEqual reports whether an on-disk permission mode satisfies what we asked
+// for. On Unix the check is exact. On Windows it cannot be: the os package has
+// no POSIX permission model there — Mode().Perm() reports 0666 for any writable
+// file and 0444 for a read-only one, and Chmod only toggles the read-only
+// attribute. So on Windows we verify the single bit that is real — owner
+// writability (0200) — and ignore the group/other bits we can never set. nvolt
+// does not rely on filesystem permissions for confidentiality anyway (keys are
+// cryptographically wrapped, and ~/.nvolt lives in the per-user profile); this
+// check is a write-integrity sanity guard, so relaxing it on Windows is safe.
+func permsEqual(actual, expected fs.FileMode, goos string) bool {
+	if goos == "windows" {
+		return actual&0o200 == expected&0o200
+	}
+	return actual == expected
 }
 
 // ReadFile reads a file and returns its contents
