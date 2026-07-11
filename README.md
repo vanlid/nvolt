@@ -318,8 +318,8 @@ nvolt pkcs11 list
 
 # Enroll an on-card key as this machine's identity.
 # With no flags, this walks you through picking a token and key;
-# or name the key directly with --uri:
-nvolt pkcs11 use --uri 'pkcs11:token=my-yubikey;id=%01;type=private'
+# or name the key directly with --pkcs11-uri:
+nvolt pkcs11 use --pkcs11-uri 'pkcs11:token=my-yubikey;id=%01;type=private'
 
 # Generate a new RSA keypair on the token
 nvolt pkcs11 generate --token my-yubikey --label my-key --id 01 --bits 2048
@@ -327,9 +327,9 @@ nvolt pkcs11 generate --token my-yubikey --label my-key --id 01 --bits 2048
 
 **Flags:**
 
-- `--module` - Path to the PKCS#11 module (`.so` on Linux/macOS, `.dll` on Windows). Optional: nvolt autodetects common OpenSC/YubiKey locations, so you only need this (or `NVOLT_PKCS11_MODULE`) to override
-- `--uri` - PKCS#11 URI of the RSA key to enroll (required for `use`)
-- `--pin-mode` - How to obtain the PIN: `prompt`, `env`, or `none` (default: `prompt`)
+- `--pkcs11-module` - Path to the PKCS#11 module (`.so` on Linux/macOS, `.dll` on Windows). Optional: nvolt autodetects common OpenSC/YubiKey locations, so you only need this (or `NVOLT_PKCS11_MODULE`) to override
+- `--pkcs11-uri` - PKCS#11 URI of the RSA key to enroll (required for `use`)
+- `--pkcs11-pin-mode` - How to obtain the PIN: `prompt`, `env`, or `none` (default: `prompt`)
 
 ## Using a hardware key (PKCS#11)
 
@@ -345,8 +345,8 @@ nvolt push             # push/pull/run then work as usual — the token unwraps 
 
 **Finding the module.** nvolt talks to the token through a PKCS#11 module — a `.so` file on Linux/macOS or a `.dll` on Windows, installed by OpenSC or your YubiKey software. nvolt checks the common install locations automatically, so you usually don't pass anything. If it can't find yours, point it at the file:
 
-- Linux/macOS: `--module /path/to/opensc-pkcs11.so`
-- Windows: `--module "C:\Program Files\OpenSC Project\OpenSC\pkcs11\opensc-pkcs11.dll"`
+- Linux/macOS: `--pkcs11-module /path/to/opensc-pkcs11.so`
+- Windows: `--pkcs11-module "C:\Program Files\OpenSC Project\OpenSC\pkcs11\opensc-pkcs11.dll"`
 
 Or set `NVOLT_PKCS11_MODULE` once in your shell profile so you never type it again.
 
@@ -358,7 +358,7 @@ Or set `NVOLT_PKCS11_MODULE` once in your shell profile so you never type it aga
 
 Then plug in the token and run `nvolt pkcs11 list` again. (`pkcs11-tool --list-slots`, which comes with OpenSC, is a quick way to confirm the card is detected at all.)
 
-**Entering your PIN.** By default nvolt asks for the token PIN and hides it as you type. For automation, use `--pin-mode env` to read it from `NVOLT_PKCS11_PIN`, or `--pin-mode none` for tokens that don't require a PIN.
+**Entering your PIN.** By default nvolt asks for the token PIN and hides it as you type. For automation, use `--pkcs11-pin-mode env` to read it from `NVOLT_PKCS11_PIN`, or `--pkcs11-pin-mode none` for tokens that don't require a PIN.
 
 ## Security
 

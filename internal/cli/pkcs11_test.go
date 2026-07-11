@@ -124,8 +124,9 @@ func TestPrintTokenListingShowsKeysWhenPresent(t *testing.T) {
 // Module resolution (flag -> NVOLT_PKCS11_MODULE -> autodetect -> not-found
 // error) is covered by pkcs11.ResolveModulePath's unit tests in
 // internal/pkcs11/autodetect_test.go, so there is no CLI-level "requires
-// module" test here: with autodetection, an empty --module is no longer an
-// error when a module can be resolved from the environment or common paths.
+// module" test here: with autodetection, an empty --pkcs11-module is no
+// longer an error when a module can be resolved from the environment or
+// common paths.
 
 // TestUseEnrollsPKCS11Machine drives runPKCS11Use (the pkcs11 use command's
 // RunE body) against a real SoftHSM fixture token (provisioned in-code by
@@ -268,15 +269,15 @@ func TestResolveEnrollURINonInteractiveErrorsWithoutHanging(t *testing.T) {
 		t.Fatal("expected an error when stdin is not a terminal, got nil")
 	}
 	if !strings.Contains(err.Error(), "not a terminal") {
-		t.Fatalf("expected a 'not a terminal' error naming --uri, got: %v", err)
+		t.Fatalf("expected a 'not a terminal' error naming --pkcs11-uri, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "--uri") {
-		t.Fatalf("expected the error to name --uri as the fix, got: %v", err)
+	if !strings.Contains(err.Error(), "--pkcs11-uri") {
+		t.Fatalf("expected the error to name --pkcs11-uri as the fix, got: %v", err)
 	}
 }
 
 // TestResolveEnrollTargetExplicitFlagsWin proves the fully-explicit
-// `--module X --uri Y` path returns exactly those values with no wizard
+// `--pkcs11-module X --pkcs11-uri Y` path returns exactly those values with no wizard
 // involvement (no autodetection, no key listing) regardless of whether
 // stdin happens to be a terminal — the non-interactive contract scripts/CI
 // depend on.

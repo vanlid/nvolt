@@ -46,9 +46,9 @@ Discovery does not log in, so it reports whatever RSA key objects the token
 exposes without a PIN.
 
 Example:
-  nvolt pkcs11 list --module /usr/lib/softhsm/libsofthsm2.so`,
+  nvolt pkcs11 list --pkcs11-module /usr/lib/softhsm/libsofthsm2.so`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// An explicit --module or NVOLT_PKCS11_MODULE targets a single module.
+		// An explicit --pkcs11-module or NVOLT_PKCS11_MODULE targets a single module.
 		// Otherwise, autodiscover and list every module we find.
 		if pkcs11Module != "" || os.Getenv("NVOLT_PKCS11_MODULE") != "" {
 			module, err := pkcs11.ResolveModulePath(pkcs11Module)
@@ -68,7 +68,7 @@ Example:
 func runPKCS11ListDiscovered() error {
 	mods := pkcs11.DetectModules()
 	if len(mods) == 0 {
-		ui.Warning("No PKCS#11 modules found (looked in common install locations); pass --module <path> or set NVOLT_PKCS11_MODULE")
+		ui.Warning("No PKCS#11 modules found (looked in common install locations); pass --pkcs11-module <path> or set NVOLT_PKCS11_MODULE")
 		return nil
 	}
 
@@ -155,10 +155,10 @@ before persisting anything, then records the module/URI/PIN-mode/OAEP-mode
 in machine-info.json so pull/push know how to reach the key at runtime.
 
 Example (non-interactive, for scripts/CI):
-  nvolt pkcs11 use --module /usr/lib/softhsm/libsofthsm2.so \
-    --uri 'pkcs11:token=nvolt-test;id=%01;type=private' --pin-mode prompt
+  nvolt pkcs11 use --pkcs11-module /usr/lib/softhsm/libsofthsm2.so \
+    --pkcs11-uri 'pkcs11:token=nvolt-test;id=%01;type=private' --pkcs11-pin-mode prompt
 
-Run with no --module/--uri from a terminal to pick module -> token -> key
+Run with no --pkcs11-module/--pkcs11-uri from a terminal to pick module -> token -> key
 interactively instead.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		module, uri, err := resolveEnrollTarget(pkcs11UseModule, pkcs11UseURI)
@@ -182,10 +182,10 @@ func runPKCS11Use(module, uri, pinMode string) error {
 // `nvolt pkcs11 use` and the --pkcs11 branch of init/join.
 func enrollPKCS11Machine(module, uri, pinMode string) error {
 	if module == "" {
-		return fmt.Errorf("no PKCS#11 module specified; use --module or set NVOLT_PKCS11_MODULE")
+		return fmt.Errorf("no PKCS#11 module specified; use --pkcs11-module or set NVOLT_PKCS11_MODULE")
 	}
 	if uri == "" {
-		return fmt.Errorf("no PKCS#11 URI specified; use --uri")
+		return fmt.Errorf("no PKCS#11 URI specified; use --pkcs11-uri")
 	}
 
 	homePaths, err := vault.GetHomePaths()
@@ -306,7 +306,7 @@ func isInteractive() bool {
 // resolveEnrollTarget resolves the PKCS#11 module path and key URI to enroll
 // for `nvolt pkcs11 use` and the --pkcs11 branch of init/join. Explicit flags
 // (or NVOLT_PKCS11_MODULE for the module) always win and never prompt, so the
-// fully-explicit `--module X --uri Y` invocation behaves exactly as before
+// fully-explicit `--pkcs11-module X --pkcs11-uri Y` invocation behaves exactly as before
 // with no TTY required. Only what is left unspecified falls back to
 // autodetection/interactive selection, and the URI wizard only ever runs when
 // stdin is a terminal.
@@ -327,7 +327,7 @@ func resolveEnrollTarget(flagModule, flagURI string) (module, uri string, err er
 	return module, uri, nil
 }
 
-// resolveEnrollModule resolves the module path. An explicit --module flag or
+// resolveEnrollModule resolves the module path. An explicit --pkcs11-module flag or
 // NVOLT_PKCS11_MODULE env var takes precedence (via pkcs11.ResolveModulePath,
 // unchanged from before this wizard existed). Otherwise it defers to
 // pkcs11.DetectModules: no modules found is an error (ResolveModulePath's,
@@ -355,7 +355,7 @@ func resolveEnrollModule(flagModule string) (string, error) {
 		for _, m := range mods {
 			fmt.Fprintf(&b, "\n  %s (%s)", m.Path, m.Label)
 		}
-		return "", fmt.Errorf("multiple PKCS#11 modules found; pass --module <path>:%s", b.String())
+		return "", fmt.Errorf("multiple PKCS#11 modules found; pass --pkcs11-module <path>:%s", b.String())
 	}
 
 	options := make([]string, len(mods))
@@ -370,13 +370,13 @@ func resolveEnrollModule(flagModule string) (string, error) {
 }
 
 // resolveEnrollURI runs the interactive key-selection wizard: it requires a
-// terminal (a non-interactive caller must pass --uri instead), lists the RSA
+// terminal (a non-interactive caller must pass --pkcs11-uri instead), lists the RSA
 // keys visible on module, narrows to a token (prompting if more than one),
 // narrows to a key on that token (prompting if more than one), and builds the
 // pkcs11: URI for the selection.
 func resolveEnrollURI(module string) (string, error) {
 	if !isInteractive() {
-		return "", fmt.Errorf("no --uri given and not a terminal; pass --uri 'pkcs11:token=...;id=...'")
+		return "", fmt.Errorf("no --pkcs11-uri given and not a terminal; pass --pkcs11-uri 'pkcs11:token=...;id=...'")
 	}
 
 	keys, err := pkcs11.ListRSAKeys(module)
@@ -499,7 +499,7 @@ var pkcs11GenerateCmd = &cobra.Command{
 tokens that expose C_GenerateKeyPair). The private key never leaves the device.
 
 Example:
-  nvolt pkcs11 generate --module /usr/lib/softhsm/libsofthsm2.so \
+  nvolt pkcs11 generate --pkcs11-module /usr/lib/softhsm/libsofthsm2.so \
     --token nvolt-test --label my-key --id 03 --bits 2048`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		module, err := pkcs11.ResolveModulePath(pkcs11GenModule)
@@ -573,20 +573,20 @@ func runPKCS11Generate(module, token, label, idHex string, bits int, pinMode str
 
 func init() {
 	pkcs11Cmd.AddCommand(pkcs11ListCmd)
-	pkcs11ListCmd.Flags().StringVar(&pkcs11Module, "module", "", "Path to PKCS#11 module (.so); autodetected if omitted")
+	pkcs11ListCmd.Flags().StringVar(&pkcs11Module, "pkcs11-module", "", "Path to PKCS#11 module (.so); autodetected if omitted")
 
 	pkcs11Cmd.AddCommand(pkcs11UseCmd)
-	pkcs11UseCmd.Flags().StringVar(&pkcs11UseModule, "module", "", "Path to PKCS#11 module (.so); autodetected if omitted")
-	pkcs11UseCmd.Flags().StringVar(&pkcs11UseURI, "uri", "", "PKCS#11 URI of the RSA key to enroll; omit on a terminal to pick interactively")
-	pkcs11UseCmd.Flags().StringVar(&pkcs11UsePinMode, "pin-mode", "prompt", "How to obtain the PIN: prompt, env, or none")
+	pkcs11UseCmd.Flags().StringVar(&pkcs11UseModule, "pkcs11-module", "", "Path to PKCS#11 module (.so); autodetected if omitted")
+	pkcs11UseCmd.Flags().StringVar(&pkcs11UseURI, "pkcs11-uri", "", "PKCS#11 URI of the RSA key to enroll; omit on a terminal to pick interactively")
+	pkcs11UseCmd.Flags().StringVar(&pkcs11UsePinMode, "pkcs11-pin-mode", "prompt", "How to obtain the PIN: prompt, env, or none")
 
 	pkcs11Cmd.AddCommand(pkcs11GenerateCmd)
-	pkcs11GenerateCmd.Flags().StringVar(&pkcs11GenModule, "module", "", "Path to PKCS#11 module (.so); autodetected if omitted")
+	pkcs11GenerateCmd.Flags().StringVar(&pkcs11GenModule, "pkcs11-module", "", "Path to PKCS#11 module (.so); autodetected if omitted")
 	pkcs11GenerateCmd.Flags().StringVar(&pkcs11GenToken, "token", "", "Token label to generate the key on (required)")
 	pkcs11GenerateCmd.Flags().StringVar(&pkcs11GenLabel, "label", "", "CKA_LABEL for the new key (required)")
 	pkcs11GenerateCmd.Flags().StringVar(&pkcs11GenID, "id", "", "CKA_ID for the new key, hex (e.g. 03) (required)")
 	pkcs11GenerateCmd.Flags().IntVar(&pkcs11GenBits, "bits", 2048, "RSA modulus size in bits")
-	pkcs11GenerateCmd.Flags().StringVar(&pkcs11GenPinMode, "pin-mode", "prompt", "How to obtain the PIN: prompt, env, or none")
+	pkcs11GenerateCmd.Flags().StringVar(&pkcs11GenPinMode, "pkcs11-pin-mode", "prompt", "How to obtain the PIN: prompt, env, or none")
 	_ = pkcs11GenerateCmd.MarkFlagRequired("token")
 	_ = pkcs11GenerateCmd.MarkFlagRequired("label")
 	_ = pkcs11GenerateCmd.MarkFlagRequired("id")

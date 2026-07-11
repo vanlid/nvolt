@@ -46,33 +46,34 @@ type pkcs11EnrollOpts struct {
 	pinMode string
 }
 
-// addPKCS11EnrollFlags registers the shared --pkcs11/--module/--uri/--pin-mode
-// flags on init and join. The flag names deliberately match the
-// `nvolt pkcs11` subcommands so a given option reads the same on every command.
+// addPKCS11EnrollFlags registers the shared --pkcs11/--pkcs11-module/
+// --pkcs11-uri/--pkcs11-pin-mode flags on init and join. The flag names
+// deliberately match the `nvolt pkcs11` subcommands so a given option reads
+// the same on every command.
 // There is intentionally no --force here: re-running init on an already-enrolled
 // PKCS#11 machine is idempotent, and replacing a software identity with a
 // hardware one is done explicitly via `nvolt pkcs11 use --force`.
 func addPKCS11EnrollFlags(cmd *cobra.Command) {
 	cmd.Flags().Bool("pkcs11", false, "Back this machine's identity with a PKCS#11 token instead of a software keypair")
-	cmd.Flags().String("module", "", "Path to PKCS#11 module (.so) (with --pkcs11); autodetected if omitted")
-	cmd.Flags().String("uri", "", "PKCS#11 URI of the RSA key to enroll (with --pkcs11)")
-	cmd.Flags().String("pin-mode", "prompt", "How to obtain the PIN: prompt, env, or none (with --pkcs11)")
+	cmd.Flags().String("pkcs11-module", "", "Path to PKCS#11 module (.so) (with --pkcs11); autodetected if omitted")
+	cmd.Flags().String("pkcs11-uri", "", "PKCS#11 URI of the RSA key to enroll (with --pkcs11)")
+	cmd.Flags().String("pkcs11-pin-mode", "prompt", "How to obtain the PIN: prompt, env, or none (with --pkcs11)")
 }
 
 // pkcs11OptsFromFlags returns the enrollment options when --pkcs11 is set, or
 // nil when it is not (unchanged software init/join). It delegates module/URI
 // resolution to resolveEnrollTarget (the same helper `nvolt pkcs11 use`
-// uses): explicit --module/--uri (or NVOLT_PKCS11_MODULE) resolve with no
-// prompting, and anything left unspecified falls back to autodetection or,
-// on a terminal, the interactive module/token/key wizard.
+// uses): explicit --pkcs11-module/--pkcs11-uri (or NVOLT_PKCS11_MODULE)
+// resolve with no prompting, and anything left unspecified falls back to
+// autodetection or, on a terminal, the interactive module/token/key wizard.
 func pkcs11OptsFromFlags(cmd *cobra.Command) (*pkcs11EnrollOpts, error) {
 	usePKCS11, _ := cmd.Flags().GetBool("pkcs11")
 	if !usePKCS11 {
 		return nil, nil
 	}
-	flagModule, _ := cmd.Flags().GetString("module")
-	flagURI, _ := cmd.Flags().GetString("uri")
-	pinMode, _ := cmd.Flags().GetString("pin-mode")
+	flagModule, _ := cmd.Flags().GetString("pkcs11-module")
+	flagURI, _ := cmd.Flags().GetString("pkcs11-uri")
+	pinMode, _ := cmd.Flags().GetString("pkcs11-pin-mode")
 	module, uri, err := resolveEnrollTarget(flagModule, flagURI)
 	if err != nil {
 		return nil, fmt.Errorf("--pkcs11 target resolution failed: %w", err)
