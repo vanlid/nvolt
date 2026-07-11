@@ -207,6 +207,29 @@ func (s *Session) DecryptOAEPSHA256(priv Object, ct []byte) ([]byte, error) {
 	return s.doDecrypt(ct)
 }
 
+// DecryptRawRSA performs CKM_RSA_X_509 (raw RSA, no padding) on the token,
+// returning the k-byte, left-zero-padded RSA decryption block m = c^d mod n.
+// Callers strip OAEP-SHA256 padding in software via crypto.UnpadOAEPSHA256.
+// This is the fallback path for tokens (e.g. SoftHSM 2.6.1) that do not expose
+// native RSA-OAEP-SHA256; see ErrMechanismUnsupported.
+func (s *Session) DecryptRawRSA(priv Object, ct []byte) ([]byte, error) {
+	mech := CK_MECHANISM{
+		Mechanism: CKM_RSA_X_509,
+		Param:     nil,
+		ParamLen:  0,
+	}
+	rv, _, _ := purego.SyscallN(s.m.fn(idxDecryptInit), s.handle,
+		uintptr(unsafe.Pointer(&mech)), priv)
+	runtime.KeepAlive(&mech)
+	if code := CKRV(rv); code != CKR_OK {
+		if code == CKR_MECHANISM_INVALID || code == CKR_ARGUMENTS_BAD {
+			return nil, fmt.Errorf("C_DecryptInit(RSA_X_509): %s: %w", code, ErrMechanismUnsupported)
+		}
+		return nil, fmt.Errorf("C_DecryptInit(RSA_X_509): %s", code)
+	}
+	return s.doDecrypt(ct)
+}
+
 // doDecrypt runs the two-call C_Decrypt length pattern.
 func (s *Session) doDecrypt(ct []byte) ([]byte, error) {
 	var outLen uintptr
