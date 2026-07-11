@@ -68,7 +68,11 @@ What already works and is unchanged:
   override. `rebind` works precisely *because* it keeps the pubkey (hence the id)
   the same.
 - **`pkcs11` stays the group name** for the remaining utilities (`list`,
-  `generate`); it is not renamed to `p11`.
+  `generate`, `import`); it is not renamed to `p11`.
+- **No Windows CNG / Windows Hello backend.** Hello/TPM keys are reached through
+  CNG (`NCryptDecrypt`, Platform Crypto KSP), not PKCS#11, so they are unreachable
+  by this work. A native `key_source: windows-cng` slotting into the existing
+  `crypto.Decrypter` seam is a plausible *future* extension, out of scope here.
 
 ---
 
