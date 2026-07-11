@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 
 	"github.com/iluxav/nvolt/internal/git"
-	"github.com/iluxav/nvolt/internal/pkcs11"
 	"github.com/iluxav/nvolt/internal/ui"
 	"github.com/iluxav/nvolt/internal/vault"
 	"github.com/spf13/cobra"
@@ -57,23 +56,22 @@ func addPKCS11EnrollFlags(cmd *cobra.Command) {
 }
 
 // pkcs11OptsFromFlags returns the enrollment options when --pkcs11 is set, or
-// nil when it is not (unchanged software init/join). It resolves the module
-// path (--module, else NVOLT_PKCS11_MODULE, else autodetection) and validates
-// that --uri is present up front.
+// nil when it is not (unchanged software init/join). It delegates module/URI
+// resolution to resolveEnrollTarget (the same helper `nvolt pkcs11 use`
+// uses): explicit --module/--uri (or NVOLT_PKCS11_MODULE) resolve with no
+// prompting, and anything left unspecified falls back to autodetection or,
+// on a terminal, the interactive module/token/key wizard.
 func pkcs11OptsFromFlags(cmd *cobra.Command) (*pkcs11EnrollOpts, error) {
 	usePKCS11, _ := cmd.Flags().GetBool("pkcs11")
 	if !usePKCS11 {
 		return nil, nil
 	}
 	flagModule, _ := cmd.Flags().GetString("module")
-	uri, _ := cmd.Flags().GetString("uri")
+	flagURI, _ := cmd.Flags().GetString("uri")
 	pinMode, _ := cmd.Flags().GetString("pin-mode")
-	module, err := pkcs11.ResolveModulePath(flagModule)
+	module, uri, err := resolveEnrollTarget(flagModule, flagURI)
 	if err != nil {
-		return nil, fmt.Errorf("--pkcs11 requires --module: %w", err)
-	}
-	if uri == "" {
-		return nil, fmt.Errorf("--pkcs11 requires --uri")
+		return nil, fmt.Errorf("--pkcs11 target resolution failed: %w", err)
 	}
 	return &pkcs11EnrollOpts{module: module, uri: uri, pinMode: pinMode}, nil
 }

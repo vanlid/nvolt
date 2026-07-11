@@ -14,6 +14,7 @@ import (
 	"github.com/iluxav/nvolt/internal/ui"
 	"github.com/iluxav/nvolt/internal/vault"
 	"github.com/iluxav/nvolt/pkg/types"
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
 
@@ -125,15 +126,18 @@ nvolt validates the token key (RSA >= 2048 bits, OAEP-SHA256 unwrap support)
 before persisting anything, then records the module/URI/PIN-mode/OAEP-mode
 in machine-info.json so pull/push know how to reach the key at runtime.
 
-Example:
+Example (non-interactive, for scripts/CI):
   nvolt pkcs11 use --module /usr/lib/softhsm/libsofthsm2.so \
-    --uri 'pkcs11:token=nvolt-test;id=%01;type=private' --pin-mode prompt`,
+    --uri 'pkcs11:token=nvolt-test;id=%01;type=private' --pin-mode prompt
+
+Run with no --module/--uri from a terminal to pick module -> token -> key
+interactively instead.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		module, err := pkcs11.ResolveModulePath(pkcs11UseModule)
+		module, uri, err := resolveEnrollTarget(pkcs11UseModule, pkcs11UseURI)
 		if err != nil {
 			return err
 		}
-		return runPKCS11Use(module, pkcs11UseURI, pkcs11UsePinMode, pkcs11UseForce)
+		return runPKCS11Use(module, uri, pkcs11UsePinMode, pkcs11UseForce)
 	},
 }
 
@@ -238,6 +242,210 @@ func enrollPKCS11Machine(module, uri, pinMode string, force bool) error {
 	return nil
 }
 
+// isInteractive reports whether stdin is attached to a terminal. It gates the
+// pkcs11 selection wizard below: a piped/redirected stdin (scripts, CI) must
+// never block on a prompt, so every wizard step first checks this and errors
+// instead of prompting when it is false.
+//
+// Uses mattn/go-isatty rather than golang.org/x/term.IsTerminal: on Windows,
+// Git Bash/MSYS2/Cygwin shells give the process an MSYS pipe rather than a
+// native console handle, which x/term.IsTerminal reports as "not a
+// terminal" — wrongly refusing an interactive user there. go-isatty's
+// IsCygwinTerminal detects that case in addition to native ttys.
+func isInteractive() bool {
+	fd := os.Stdin.Fd()
+	return isatty.IsTerminal(fd) || isatty.IsCygwinTerminal(fd)
+}
+
+// resolveEnrollTarget resolves the PKCS#11 module path and key URI to enroll
+// for `nvolt pkcs11 use` and the --pkcs11 branch of init/join. Explicit flags
+// (or NVOLT_PKCS11_MODULE for the module) always win and never prompt, so the
+// fully-explicit `--module X --uri Y` invocation behaves exactly as before
+// with no TTY required. Only what is left unspecified falls back to
+// autodetection/interactive selection, and the URI wizard only ever runs when
+// stdin is a terminal.
+func resolveEnrollTarget(flagModule, flagURI string) (module, uri string, err error) {
+	module, err = resolveEnrollModule(flagModule)
+	if err != nil {
+		return "", "", err
+	}
+
+	if flagURI != "" {
+		return module, flagURI, nil
+	}
+
+	uri, err = resolveEnrollURI(module)
+	if err != nil {
+		return "", "", err
+	}
+	return module, uri, nil
+}
+
+// resolveEnrollModule resolves the module path. An explicit --module flag or
+// NVOLT_PKCS11_MODULE env var takes precedence (via pkcs11.ResolveModulePath,
+// unchanged from before this wizard existed). Otherwise it defers to
+// pkcs11.DetectModules: no modules found is an error (ResolveModulePath's,
+// which lists every common location probed); exactly one is used without
+// asking; more than one prompts (on a terminal) or errors listing the
+// candidates (not a terminal).
+func resolveEnrollModule(flagModule string) (string, error) {
+	if flagModule != "" || os.Getenv("NVOLT_PKCS11_MODULE") != "" {
+		return pkcs11.ResolveModulePath(flagModule)
+	}
+
+	mods := pkcs11.DetectModules()
+	switch len(mods) {
+	case 0:
+		// Flag and env are both empty here, so this reproduces exactly the
+		// "not found, looked in: ..." error DetectModules-backed autodetection
+		// already produces.
+		return pkcs11.ResolveModulePath("")
+	case 1:
+		return mods[0].Path, nil
+	}
+
+	if !isInteractive() {
+		var b strings.Builder
+		for _, m := range mods {
+			fmt.Fprintf(&b, "\n  %s (%s)", m.Path, m.Label)
+		}
+		return "", fmt.Errorf("multiple PKCS#11 modules found; pass --module <path>:%s", b.String())
+	}
+
+	options := make([]string, len(mods))
+	for i, m := range mods {
+		options[i] = fmt.Sprintf("%s (%s)", m.Label, m.Path)
+	}
+	choice, err := selectOptionStdio("Multiple PKCS#11 modules found; choose one:", options)
+	if err != nil {
+		return "", fmt.Errorf("module selection: %w", err)
+	}
+	return mods[choice].Path, nil
+}
+
+// resolveEnrollURI runs the interactive key-selection wizard: it requires a
+// terminal (a non-interactive caller must pass --uri instead), lists the RSA
+// keys visible on module, narrows to a token (prompting if more than one),
+// narrows to a key on that token (prompting if more than one), and builds the
+// pkcs11: URI for the selection.
+func resolveEnrollURI(module string) (string, error) {
+	if !isInteractive() {
+		return "", fmt.Errorf("no --uri given and not a terminal; pass --uri 'pkcs11:token=...;id=...'")
+	}
+
+	keys, err := pkcs11.ListRSAKeys(module)
+	if err != nil {
+		return "", fmt.Errorf("failed to list PKCS#11 keys: %w", err)
+	}
+	if len(keys) == 0 {
+		return "", fmt.Errorf("no RSA keys found on %s", module)
+	}
+
+	tokenLabel, err := selectToken(keys)
+	if err != nil {
+		return "", err
+	}
+
+	var onToken []pkcs11.KeyInfo
+	for _, k := range keys {
+		if k.TokenLabel == tokenLabel {
+			onToken = append(onToken, k)
+		}
+	}
+
+	key, err := selectKey(onToken)
+	if err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("pkcs11:token=%s;id=%s;type=private",
+		pctEncodePKCS11Attr(tokenLabel), pctEncodeID(key.ID)), nil
+}
+
+// selectToken narrows keys to a single token label: the one label present, or
+// (when more than one token has RSA keys) a wizard prompt among the distinct
+// labels in first-seen order.
+func selectToken(keys []pkcs11.KeyInfo) (string, error) {
+	var labels []string
+	seen := map[string]bool{}
+	for _, k := range keys {
+		if !seen[k.TokenLabel] {
+			seen[k.TokenLabel] = true
+			labels = append(labels, k.TokenLabel)
+		}
+	}
+	if len(labels) == 1 {
+		return labels[0], nil
+	}
+	choice, err := selectOptionStdio("Multiple tokens found; choose one:", labels)
+	if err != nil {
+		return "", fmt.Errorf("token selection: %w", err)
+	}
+	return labels[choice], nil
+}
+
+// selectKey narrows onToken (already filtered to a single token) to a single
+// key: the one key present, or a wizard prompt among them otherwise.
+func selectKey(onToken []pkcs11.KeyInfo) (pkcs11.KeyInfo, error) {
+	if len(onToken) == 1 {
+		return onToken[0], nil
+	}
+	options := make([]string, len(onToken))
+	for i, k := range onToken {
+		options[i] = fmt.Sprintf("%s (id=%x, %d-bit)", k.Label, k.ID, k.Bits)
+	}
+	choice, err := selectOptionStdio("Multiple keys found on token; choose one:", options)
+	if err != nil {
+		return pkcs11.KeyInfo{}, fmt.Errorf("key selection: %w", err)
+	}
+	return onToken[choice], nil
+}
+
+// pctEncodePKCS11Attr percent-encodes s for use as an RFC7512 pkcs11 URI
+// attribute value (e.g. token=): bytes outside the URI "unreserved" set
+// (RFC 3986 SS2.3: ALPHA / DIGIT / "-" "." "_" "~") are escaped as %XX so
+// delimiters like ";", "%" and space survive round-tripping through
+// keyprovider's parsePKCS11URI, which decodes attribute values with
+// url.PathUnescape.
+func pctEncodePKCS11Attr(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if isUnreservedPKCS11Byte(c) {
+			b.WriteByte(c)
+		} else {
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	return b.String()
+}
+
+// isUnreservedPKCS11Byte reports whether c needs no percent-escaping in an
+// RFC7512 pkcs11 URI attribute value.
+func isUnreservedPKCS11Byte(c byte) bool {
+	switch {
+	case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+		return true
+	case c == '-' || c == '.' || c == '_' || c == '~':
+		return true
+	default:
+		return false
+	}
+}
+
+// pctEncodeID renders raw key-id bytes as RFC7512 id= percent-escapes, one
+// %XX per byte regardless of whether the byte would otherwise print (e.g.
+// []byte{0x01} -> "%01"), matching the CKA_ID convention used throughout this
+// package (hex, e.g. --id 03 in `pkcs11 generate`) and round-tripping through
+// parsePKCS11URI's url.PathUnescape.
+func pctEncodeID(id []byte) string {
+	var b strings.Builder
+	for _, by := range id {
+		fmt.Fprintf(&b, "%%%02x", by)
+	}
+	return b.String()
+}
+
 var pkcs11GenerateCmd = &cobra.Command{
 	Use:   "generate",
 	Short: "Generate an RSA keypair on a PKCS#11 token",
@@ -323,10 +531,9 @@ func init() {
 
 	pkcs11Cmd.AddCommand(pkcs11UseCmd)
 	pkcs11UseCmd.Flags().StringVar(&pkcs11UseModule, "module", "", "Path to PKCS#11 module (.so); autodetected if omitted")
-	pkcs11UseCmd.Flags().StringVar(&pkcs11UseURI, "uri", "", "PKCS#11 URI of the RSA key to enroll (required)")
+	pkcs11UseCmd.Flags().StringVar(&pkcs11UseURI, "uri", "", "PKCS#11 URI of the RSA key to enroll; omit on a terminal to pick interactively")
 	pkcs11UseCmd.Flags().StringVar(&pkcs11UsePinMode, "pin-mode", "prompt", "How to obtain the PIN: prompt, env, or none")
 	pkcs11UseCmd.Flags().BoolVar(&pkcs11UseForce, "force", false, "Overwrite an existing machine identity")
-	_ = pkcs11UseCmd.MarkFlagRequired("uri")
 
 	pkcs11Cmd.AddCommand(pkcs11GenerateCmd)
 	pkcs11GenerateCmd.Flags().StringVar(&pkcs11GenModule, "module", "", "Path to PKCS#11 module (.so); autodetected if omitted")

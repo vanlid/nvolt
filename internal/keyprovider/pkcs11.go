@@ -156,6 +156,14 @@ func parsePKCS11URI(uri string) (token string, id []byte, err error) {
 	return token, id, nil
 }
 
+// ParsePKCS11URI exports parsePKCS11URI's parsing (token=/id= extraction with
+// RFC7512 percent-decoding) so other packages can verify a URI they built
+// decodes back to the token/id they intended, without duplicating the parse
+// logic Enroll uses at runtime.
+func ParsePKCS11URI(uri string) (token string, id []byte, err error) {
+	return parsePKCS11URI(uri)
+}
+
 // pkcs11Decrypter is a crypto.Decrypter backed by an open, logged-in PKCS#11
 // session. Public() returns the machine's stored public key; Decrypt() unwraps
 // on the token per the enrolled oaep_mode.

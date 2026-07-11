@@ -2,12 +2,14 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/iluxav/nvolt/internal/hsmtest"
+	"github.com/iluxav/nvolt/internal/keyprovider"
 	"github.com/iluxav/nvolt/internal/ui"
 	"github.com/iluxav/nvolt/internal/vault"
 	"github.com/iluxav/nvolt/pkg/types"
@@ -203,5 +205,91 @@ func TestPercentEscapeSurvivesUIDoublePass(t *testing.T) {
 	}
 	if strings.Contains(out, "%!") {
 		t.Fatalf("escaping did not survive ui's double pass, got:\n%s", out)
+	}
+}
+
+// TestPKCS11URIRoundTrip builds a pkcs11: URI from a token label and id via
+// the wizard's percent-encoding helpers, then parses it the way Enroll does
+// (keyprovider.ParsePKCS11URI), asserting the decoded token/id match the
+// originals. Covers a plain label, a label needing escaping (";", "%",
+// space), and the RFC7512 example from this repo's own docs/tests:
+// id=[]byte{0x01} -> "id=%01".
+func TestPKCS11URIRoundTrip(t *testing.T) {
+	cases := []struct {
+		name  string
+		token string
+		id    []byte
+	}{
+		{"simple", "nvolt-test", []byte{0x01}},
+		{"id needs two digit hex per byte", "yubikey", []byte{0x00, 0x0a, 0xff}},
+		{"token needs escaping", "My Token; v2 (100%)", []byte{0x03}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			uri := fmt.Sprintf("pkcs11:token=%s;id=%s;type=private",
+				pctEncodePKCS11Attr(tc.token), pctEncodeID(tc.id))
+
+			gotToken, gotID, err := keyprovider.ParsePKCS11URI(uri)
+			if err != nil {
+				t.Fatalf("ParsePKCS11URI(%q): %v", uri, err)
+			}
+			if gotToken != tc.token {
+				t.Fatalf("token round-trip mismatch: built %q, parsed back %q (uri=%q)", tc.token, gotToken, uri)
+			}
+			if !bytes.Equal(gotID, tc.id) {
+				t.Fatalf("id round-trip mismatch: built %x, parsed back %x (uri=%q)", tc.id, gotID, uri)
+			}
+		})
+	}
+}
+
+// TestPctEncodeIDSingleByte pins down the exact example from the task spec:
+// id byte 0x01 must render as "%01" (lowercase hex), matching the URIs used
+// throughout this repo's own SoftHSM fixtures and docs.
+func TestPctEncodeIDSingleByte(t *testing.T) {
+	if got := pctEncodeID([]byte{0x01}); got != "%01" {
+		t.Fatalf("pctEncodeID([]byte{0x01}) = %q, want %q", got, "%01")
+	}
+}
+
+// TestResolveEnrollURINonInteractiveErrorsWithoutHanging proves the wizard's
+// URI step refuses to prompt when stdin is not a terminal (the normal case
+// under `go test`): it must return a clear, actionable error immediately
+// instead of blocking on input or silently guessing a key.
+func TestResolveEnrollURINonInteractiveErrorsWithoutHanging(t *testing.T) {
+	if isInteractive() {
+		t.Skip("stdin is a terminal in this environment; non-interactive gating not exercised")
+	}
+	_, err := resolveEnrollURI("/nonexistent/pkcs11-module.so")
+	if err == nil {
+		t.Fatal("expected an error when stdin is not a terminal, got nil")
+	}
+	if !strings.Contains(err.Error(), "not a terminal") {
+		t.Fatalf("expected a 'not a terminal' error naming --uri, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "--uri") {
+		t.Fatalf("expected the error to name --uri as the fix, got: %v", err)
+	}
+}
+
+// TestResolveEnrollTargetExplicitFlagsWin proves the fully-explicit
+// `--module X --uri Y` path returns exactly those values with no wizard
+// involvement (no autodetection, no key listing) regardless of whether
+// stdin happens to be a terminal — the non-interactive contract scripts/CI
+// depend on.
+func TestResolveEnrollTargetExplicitFlagsWin(t *testing.T) {
+	const wantModule = "/some/explicit/module.so"
+	const wantURI = "pkcs11:token=nvolt-test;id=%01;type=private"
+
+	gotModule, gotURI, err := resolveEnrollTarget(wantModule, wantURI)
+	if err != nil {
+		t.Fatalf("resolveEnrollTarget with explicit flags: %v", err)
+	}
+	if gotModule != wantModule {
+		t.Fatalf("module = %q, want %q (flag must win outright)", gotModule, wantModule)
+	}
+	if gotURI != wantURI {
+		t.Fatalf("uri = %q, want %q (flag must win outright, no prompting)", gotURI, wantURI)
 	}
 }
