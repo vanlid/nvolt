@@ -38,8 +38,8 @@ type Module struct {
 func (m *Module) initialize() error {
 	m.initOnce.Do(func() {
 		rv, _, _ := purego.SyscallN(m.fn(idxInitialize), 0)
-		if CKRV(rv) != CKR_OK {
-			m.initErr = fmt.Errorf("C_Initialize: %s", CKRV(rv))
+		if rvOf(rv) != CKR_OK {
+			m.initErr = fmt.Errorf("C_Initialize: %s", rvOf(rv))
 			return
 		}
 		m.initialized = true
@@ -61,9 +61,9 @@ func Open(path string) (*Module, error) {
 	var fnList unsafe.Pointer
 	// CK_RV C_GetFunctionList(CK_FUNCTION_LIST_PTR_PTR)
 	rv, _, _ := purego.SyscallN(sym, uintptr(unsafe.Pointer(&fnList)))
-	if CKRV(rv) != CKR_OK {
+	if rvOf(rv) != CKR_OK {
 		_ = dlclose(handle)
-		return nil, fmt.Errorf("C_GetFunctionList: %s", CKRV(rv))
+		return nil, fmt.Errorf("C_GetFunctionList: %s", rvOf(rv))
 	}
 	offset, err := detectHeaderOffset(fnList, sym)
 	if err != nil {

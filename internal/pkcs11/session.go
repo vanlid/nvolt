@@ -3,7 +3,6 @@ package pkcs11
 import (
 	"bytes"
 	"crypto/rsa"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"math/big"
@@ -68,48 +67,61 @@ func (m *Module) openSession(tokenLabel string, rw bool) (*Session, error) {
 	if rw {
 		flags |= CKF_RW_SESSION
 	}
-	var handle uintptr
+	// phSession is a CK_SESSION_HANDLE out-param (CK_ULONG width): 4 bytes on
+	// Windows, so a plain Go uintptr would leave garbage in its upper half.
+	handle := newCKULongOut()
 	rv, _, _ := purego.SyscallN(m.fn(idxOpenSession), slot, flags,
-		0, 0, uintptr(unsafe.Pointer(&handle)))
-	if CKRV(rv) != CKR_OK {
-		return nil, fmt.Errorf("C_OpenSession: %s", CKRV(rv))
+		0, 0, uintptr(handle.ptr()))
+	runtime.KeepAlive(handle)
+	if rvOf(rv) != CKR_OK {
+		return nil, fmt.Errorf("C_OpenSession: %s", rvOf(rv))
 	}
-	return &Session{m: m, handle: handle, flags: tokenFlags}, nil
+	return &Session{m: m, handle: handle.get(), flags: tokenFlags}, nil
 }
 
 // findSlot returns the slot id and CK_TOKEN_INFO.flags of the token whose
 // label matches tokenLabel.
 func (m *Module) findSlot(tokenLabel string) (uintptr, uintptr, error) {
-	var count uintptr
+	// count is a CK_ULONG in/out param (slot count): 4 bytes on Windows.
+	count := newCKULongOut()
 	// tokenPresent = CK_TRUE (1)
-	rv, _, _ := purego.SyscallN(m.fn(idxGetSlotList), 1, 0, uintptr(unsafe.Pointer(&count)))
-	if CKRV(rv) != CKR_OK {
-		return 0, 0, fmt.Errorf("C_GetSlotList(count): %s", CKRV(rv))
+	rv, _, _ := purego.SyscallN(m.fn(idxGetSlotList), 1, 0, uintptr(count.ptr()))
+	runtime.KeepAlive(count)
+	if rvOf(rv) != CKR_OK {
+		return 0, 0, fmt.Errorf("C_GetSlotList(count): %s", rvOf(rv))
 	}
-	if count == 0 {
+	n := int(count.get())
+	if n == 0 {
 		return 0, 0, fmt.Errorf("no token-present slots")
 	}
-	slots := make([]uintptr, count)
+	// The slot-id array holds n CK_SLOT_IDs (CK_ULONG width): 4-byte stride on
+	// Windows, so a []uintptr would mis-stride.
+	slots := newCKULongArr(n)
 	rv, _, _ = purego.SyscallN(m.fn(idxGetSlotList), 1,
-		uintptr(unsafe.Pointer(&slots[0])), uintptr(unsafe.Pointer(&count)))
-	if CKRV(rv) != CKR_OK {
-		return 0, 0, fmt.Errorf("C_GetSlotList: %s", CKRV(rv))
+		uintptr(slots.ptr()), uintptr(count.ptr()))
+	runtime.KeepAlive(slots)
+	runtime.KeepAlive(count)
+	if rvOf(rv) != CKR_OK {
+		return 0, 0, fmt.Errorf("C_GetSlotList: %s", rvOf(rv))
 	}
 
 	want := []byte(tokenLabel)
-	for _, slot := range slots[:count] {
-		// CK_TOKEN_INFO (Cryptoki 2.40, LP64) begins with label[32]
-		// (space-padded, not NUL-terminated), followed by manufacturerID[32]
-		// + model[16] + serialNumber[16] = 96 bytes, then flags (CK_ULONG,
-		// 8 bytes) at byte offset 96.
+	for i := 0; i < int(count.get()); i++ {
+		slot := slots.get(i)
+		// CK_TOKEN_INFO begins with label[32] (space-padded, not
+		// NUL-terminated), followed by manufacturerID[32] + model[16] +
+		// serialNumber[16] = 96 bytes, then flags (CK_ULONG) at byte offset 96.
+		// The 96 offset is the same on both ABIs (it is after four CK_CHAR
+		// arrays, unaffected by CK_ULONG width or packing), but flags is read
+		// at the CK_ULONG width: 8 bytes on unix, 4 on Windows.
 		var info [256]byte
 		rv, _, _ = purego.SyscallN(m.fn(idxGetTokenInfo), slot, uintptr(unsafe.Pointer(&info[0])))
-		if CKRV(rv) != CKR_OK {
+		if rvOf(rv) != CKR_OK {
 			continue
 		}
 		label := bytes.TrimRight(info[:32], " ")
 		if bytes.Equal(label, want) {
-			flags := uintptr(binary.LittleEndian.Uint64(info[96:104]))
+			flags := getCKULong(info[96 : 96+ckULongSize])
 			return slot, flags, nil
 		}
 	}
@@ -130,8 +142,8 @@ func (s *Session) Login(pin string) error {
 	rv, _, _ := purego.SyscallN(s.m.fn(idxLogin), s.handle, CKU_USER,
 		uintptr(unsafe.Pointer(&pinB[0])), uintptr(len(pinB)))
 	runtime.KeepAlive(pinB)
-	if CKRV(rv) != CKR_OK {
-		return fmt.Errorf("C_Login: %s", CKRV(rv))
+	if rvOf(rv) != CKR_OK {
+		return fmt.Errorf("C_Login: %s", rvOf(rv))
 	}
 	return nil
 }
@@ -157,8 +169,8 @@ func (s *Session) LoginRequired() bool {
 // out-of-band channel, cannot) supply a PIN itself.
 func (s *Session) LoginProtected() error {
 	rv, _, _ := purego.SyscallN(s.m.fn(idxLogin), s.handle, CKU_USER, 0, 0)
-	if CKRV(rv) != CKR_OK {
-		return fmt.Errorf("C_Login (protected authentication path): %s", CKRV(rv))
+	if rvOf(rv) != CKR_OK {
+		return fmt.Errorf("C_Login (protected authentication path): %s", rvOf(rv))
 	}
 	return nil
 }
@@ -170,8 +182,8 @@ func (s *Session) Close() error {
 	}
 	rv, _, _ := purego.SyscallN(s.m.fn(idxCloseSession), s.handle)
 	s.handle = 0
-	if CKRV(rv) != CKR_OK {
-		return fmt.Errorf("C_CloseSession: %s", CKRV(rv))
+	if rvOf(rv) != CKR_OK {
+		return fmt.Errorf("C_CloseSession: %s", rvOf(rv))
 	}
 	return nil
 }
@@ -179,41 +191,45 @@ func (s *Session) Close() error {
 // FindRSAPrivateKey returns the first RSA private key object matching id.
 // A nil/empty id matches any RSA private key.
 func (s *Session) FindRSAPrivateKey(id []byte) (Object, error) {
-	class := CKO_PRIVATE_KEY
-	keyType := CKK_RSA
-	attrs := []CK_ATTRIBUTE{
-		{Type: CKA_CLASS, Value: unsafe.Pointer(&class), Len: unsafe.Sizeof(class)},
-		{Type: CKA_KEY_TYPE, Value: unsafe.Pointer(&keyType), Len: unsafe.Sizeof(keyType)},
+	// CKA_CLASS/CKA_KEY_TYPE values are CK_ULONGs, so encodeCKULong sizes them
+	// per ABI (8 bytes unix, 4 Windows) and the template is marshaled into the
+	// packed CK_ATTRIBUTE layout by packTemplate.
+	attrs := []attr{
+		{typ: CKA_CLASS, val: encodeCKULong(CKO_PRIVATE_KEY)},
+		{typ: CKA_KEY_TYPE, val: encodeCKULong(CKK_RSA)},
 	}
 	if len(id) > 0 {
-		attrs = append(attrs, CK_ATTRIBUTE{Type: CKA_ID, Value: unsafe.Pointer(&id[0]), Len: uintptr(len(id))})
+		attrs = append(attrs, attr{typ: CKA_ID, val: id})
 	}
+	tmpl := packTemplate(attrs)
 
 	rv, _, _ := purego.SyscallN(s.m.fn(idxFindObjectsInit), s.handle,
-		uintptr(unsafe.Pointer(&attrs[0])), uintptr(len(attrs)))
-	runtime.KeepAlive(attrs)
-	runtime.KeepAlive(id)
-	if CKRV(rv) != CKR_OK {
-		return 0, fmt.Errorf("C_FindObjectsInit: %s", CKRV(rv))
+		uintptr(tmpl.ptr()), tmpl.count())
+	runtime.KeepAlive(tmpl)
+	if rvOf(rv) != CKR_OK {
+		return 0, fmt.Errorf("C_FindObjectsInit: %s", rvOf(rv))
 	}
 
-	var obj uintptr
-	var found uintptr
+	// phObject array (1 slot) and pulObjectCount are CK_ULONG-width out-params.
+	obj := newCKULongArr(1)
+	found := newCKULongOut()
 	rv, _, _ = purego.SyscallN(s.m.fn(idxFindObjects), s.handle,
-		uintptr(unsafe.Pointer(&obj)), 1, uintptr(unsafe.Pointer(&found)))
-	findErr := CKRV(rv)
+		uintptr(obj.ptr()), 1, uintptr(found.ptr()))
+	runtime.KeepAlive(obj)
+	runtime.KeepAlive(found)
+	findErr := rvOf(rv)
 
 	rvF, _, _ := purego.SyscallN(s.m.fn(idxFindObjectsFinal), s.handle)
 	if findErr != CKR_OK {
 		return 0, fmt.Errorf("C_FindObjects: %s", findErr)
 	}
-	if CKRV(rvF) != CKR_OK {
-		return 0, fmt.Errorf("C_FindObjectsFinal: %s", CKRV(rvF))
+	if rvOf(rvF) != CKR_OK {
+		return 0, fmt.Errorf("C_FindObjectsFinal: %s", rvOf(rvF))
 	}
-	if found == 0 {
+	if found.get() == 0 {
 		return 0, fmt.Errorf("no RSA private key found for id %x", id)
 	}
-	return obj, nil
+	return obj.get(0), nil
 }
 
 // RSAPublicKey reads CKA_MODULUS and CKA_PUBLIC_EXPONENT from an RSA key
@@ -235,24 +251,31 @@ func (s *Session) RSAPublicKey(obj Object) (*rsa.PublicKey, error) {
 
 // getAttribute fetches one attribute value using the two-call length pattern.
 func (s *Session) getAttribute(obj Object, attrType uintptr) ([]byte, error) {
-	tmpl := []CK_ATTRIBUTE{{Type: attrType, Value: nil, Len: 0}}
+	// First call: nil val (pValue=NULL, ulValueLen=0) asks the token for the
+	// required size, which it writes back into ulValueLen.
+	tmpl := packTemplate([]attr{{typ: attrType}})
 	rv, _, _ := purego.SyscallN(s.m.fn(idxGetAttributeValue), s.handle, obj,
-		uintptr(unsafe.Pointer(&tmpl[0])), 1)
-	if CKRV(rv) != CKR_OK {
-		return nil, fmt.Errorf("C_GetAttributeValue(size 0x%x): %s", attrType, CKRV(rv))
+		uintptr(tmpl.ptr()), 1)
+	runtime.KeepAlive(tmpl)
+	if rvOf(rv) != CKR_OK {
+		return nil, fmt.Errorf("C_GetAttributeValue(size 0x%x): %s", attrType, rvOf(rv))
 	}
-	if tmpl[0].Len == 0 {
+	n := tmpl.valueLen(0)
+	if n == 0 {
 		return nil, nil
 	}
-	buf := make([]byte, tmpl[0].Len)
-	tmpl[0].Value = unsafe.Pointer(&buf[0])
+	// Second call: point pValue at buf and fetch. valueLen(0) reads the actual
+	// length the token wrote back (at the ABI's CK_ULONG width).
+	buf := make([]byte, n)
+	tmpl.setValue(0, unsafe.Pointer(&buf[0]), n)
 	rv, _, _ = purego.SyscallN(s.m.fn(idxGetAttributeValue), s.handle, obj,
-		uintptr(unsafe.Pointer(&tmpl[0])), 1)
+		uintptr(tmpl.ptr()), 1)
+	runtime.KeepAlive(tmpl)
 	runtime.KeepAlive(buf)
-	if CKRV(rv) != CKR_OK {
-		return nil, fmt.Errorf("C_GetAttributeValue(0x%x): %s", attrType, CKRV(rv))
+	if rvOf(rv) != CKR_OK {
+		return nil, fmt.Errorf("C_GetAttributeValue(0x%x): %s", attrType, rvOf(rv))
 	}
-	return buf[:tmpl[0].Len], nil
+	return buf[:tmpl.valueLen(0)], nil
 }
 
 // GenerateRSAKeyPair generates an RSA keypair on the token via
@@ -264,39 +287,35 @@ func (s *Session) getAttribute(obj Object, attrType uintptr) ([]byte, error) {
 // as some PIV tokens surface via PKCS#11), the returned error spells out the
 // manual on-card generation fallback (ykman / yubico-piv-tool).
 func (s *Session) GenerateRSAKeyPair(label string, id []byte, bits int) (Object, error) {
-	mech := CK_MECHANISM{Mechanism: CKM_RSA_PKCS_KEY_PAIR_GEN, Param: nil, ParamLen: 0}
+	mech := packMechanismSimple(CKM_RSA_PKCS_KEY_PAIR_GEN)
 
-	// CK_BBOOL is a single byte; CK_TRUE == 0x01. modulusBits is a CK_ULONG
-	// (uintptr, 8 bytes on linux/amd64). Keep the backing values addressable
-	// for the whole call and pin them with runtime.KeepAlive below, exactly as
-	// FindObjects/Decrypt do with their attribute-backing slices.
-	ckTrue := []byte{0x01}
-	modulusBits := uintptr(bits)
+	// CK_BBOOL is a single byte on every ABI; CK_TRUE == 0x01. CKA_MODULUS_BITS
+	// is a CK_ULONG, so encodeCKULong sizes it per ABI. The packed templates
+	// copy every value into their own backing buffer, so the only keep-alive
+	// anchors needed across the syscall are the packed templates themselves.
 	publicExponent := []byte{0x01, 0x00, 0x01} // 65537
 	labelB := []byte(label)
 
-	boolAttr := func(t uintptr) CK_ATTRIBUTE {
-		return CK_ATTRIBUTE{Type: t, Value: unsafe.Pointer(&ckTrue[0]), Len: 1}
-	}
-	labelIDAttrs := func() []CK_ATTRIBUTE {
-		attrs := []CK_ATTRIBUTE{{Type: CKA_LABEL, Value: unsafe.Pointer(&labelB[0]), Len: uintptr(len(labelB))}}
+	boolAttr := func(t uintptr) attr { return attr{typ: t, val: []byte{0x01}} }
+	labelIDAttrs := func() []attr {
+		attrs := []attr{{typ: CKA_LABEL, val: labelB}}
 		if len(id) > 0 {
-			attrs = append(attrs, CK_ATTRIBUTE{Type: CKA_ID, Value: unsafe.Pointer(&id[0]), Len: uintptr(len(id))})
+			attrs = append(attrs, attr{typ: CKA_ID, val: id})
 		}
 		return attrs
 	}
 
-	pubTemplate := []CK_ATTRIBUTE{
-		{Type: CKA_MODULUS_BITS, Value: unsafe.Pointer(&modulusBits), Len: unsafe.Sizeof(modulusBits)},
-		{Type: CKA_PUBLIC_EXPONENT, Value: unsafe.Pointer(&publicExponent[0]), Len: uintptr(len(publicExponent))},
+	pubAttrs := []attr{
+		{typ: CKA_MODULUS_BITS, val: encodeCKULong(uintptr(bits))},
+		{typ: CKA_PUBLIC_EXPONENT, val: publicExponent},
 		boolAttr(CKA_TOKEN),
 		boolAttr(CKA_ENCRYPT),
 		boolAttr(CKA_VERIFY),
 		boolAttr(CKA_WRAP),
 	}
-	pubTemplate = append(pubTemplate, labelIDAttrs()...)
+	pubAttrs = append(pubAttrs, labelIDAttrs()...)
 
-	privTemplate := []CK_ATTRIBUTE{
+	privAttrs := []attr{
 		boolAttr(CKA_TOKEN),
 		boolAttr(CKA_PRIVATE),
 		boolAttr(CKA_SENSITIVE),
@@ -304,24 +323,26 @@ func (s *Session) GenerateRSAKeyPair(label string, id []byte, bits int) (Object,
 		boolAttr(CKA_SIGN),
 		boolAttr(CKA_UNWRAP),
 	}
-	privTemplate = append(privTemplate, labelIDAttrs()...)
+	privAttrs = append(privAttrs, labelIDAttrs()...)
 
-	var pubHandle, privHandle uintptr
+	pubTemplate := packTemplate(pubAttrs)
+	privTemplate := packTemplate(privAttrs)
+
+	// phPublicKey/phPrivateKey are CK_OBJECT_HANDLE out-params (CK_ULONG width).
+	pubHandle := newCKULongOut()
+	privHandle := newCKULongOut()
 	rv, _, _ := purego.SyscallN(s.m.fn(idxGenerateKeyPair), s.handle,
-		uintptr(unsafe.Pointer(&mech)),
-		uintptr(unsafe.Pointer(&pubTemplate[0])), uintptr(len(pubTemplate)),
-		uintptr(unsafe.Pointer(&privTemplate[0])), uintptr(len(privTemplate)),
-		uintptr(unsafe.Pointer(&pubHandle)), uintptr(unsafe.Pointer(&privHandle)))
-	runtime.KeepAlive(&mech)
-	runtime.KeepAlive(ckTrue)
-	runtime.KeepAlive(&modulusBits)
-	runtime.KeepAlive(publicExponent)
-	runtime.KeepAlive(labelB)
-	runtime.KeepAlive(id)
+		uintptr(mech.ptr()),
+		uintptr(pubTemplate.ptr()), pubTemplate.count(),
+		uintptr(privTemplate.ptr()), privTemplate.count(),
+		uintptr(pubHandle.ptr()), uintptr(privHandle.ptr()))
+	runtime.KeepAlive(mech)
 	runtime.KeepAlive(pubTemplate)
 	runtime.KeepAlive(privTemplate)
+	runtime.KeepAlive(pubHandle)
+	runtime.KeepAlive(privHandle)
 
-	if code := CKRV(rv); code != CKR_OK {
+	if code := rvOf(rv); code != CKR_OK {
 		if code == CKR_FUNCTION_NOT_SUPPORTED {
 			return 0, fmt.Errorf("C_GenerateKeyPair: %s: this token does not support "+
 				"on-card key generation via PKCS#11; generate the key directly on the "+
@@ -331,22 +352,16 @@ func (s *Session) GenerateRSAKeyPair(label string, id []byte, bits int) (Object,
 		}
 		return 0, fmt.Errorf("C_GenerateKeyPair: %s", code)
 	}
-	return privHandle, nil
+	return privHandle.get(), nil
 }
 
 // DecryptOAEPSHA256 performs CKM_RSA_PKCS_OAEP (SHA-256, MGF1-SHA256) on the token.
 func (s *Session) DecryptOAEPSHA256(priv Object, ct []byte) ([]byte, error) {
-	params := ckOAEPParams{HashAlg: CKM_SHA256, Mgf: CKG_MGF1_SHA256, SourceType: CKZ_DATA_SPECIFIED}
-	mech := CK_MECHANISM{
-		Mechanism: CKM_RSA_PKCS_OAEP,
-		Param:     unsafe.Pointer(&params),
-		ParamLen:  unsafe.Sizeof(params),
-	}
+	mech := packMechanismOAEP(CKM_RSA_PKCS_OAEP, CKM_SHA256, CKG_MGF1_SHA256, CKZ_DATA_SPECIFIED)
 	rv, _, _ := purego.SyscallN(s.m.fn(idxDecryptInit), s.handle,
-		uintptr(unsafe.Pointer(&mech)), priv)
-	runtime.KeepAlive(&params)
-	runtime.KeepAlive(&mech)
-	if code := CKRV(rv); code != CKR_OK {
+		uintptr(mech.ptr()), priv)
+	runtime.KeepAlive(mech)
+	if code := rvOf(rv); code != CKR_OK {
 		if code == CKR_MECHANISM_INVALID || code == CKR_ARGUMENTS_BAD {
 			return nil, fmt.Errorf("C_DecryptInit(OAEP): %s: %w", code, ErrMechanismUnsupported)
 		}
@@ -361,15 +376,11 @@ func (s *Session) DecryptOAEPSHA256(priv Object, ct []byte) ([]byte, error) {
 // This is the fallback path for tokens (e.g. SoftHSM 2.6.1) that do not expose
 // native RSA-OAEP-SHA256; see ErrMechanismUnsupported.
 func (s *Session) DecryptRawRSA(priv Object, ct []byte) ([]byte, error) {
-	mech := CK_MECHANISM{
-		Mechanism: CKM_RSA_X_509,
-		Param:     nil,
-		ParamLen:  0,
-	}
+	mech := packMechanismSimple(CKM_RSA_X_509)
 	rv, _, _ := purego.SyscallN(s.m.fn(idxDecryptInit), s.handle,
-		uintptr(unsafe.Pointer(&mech)), priv)
-	runtime.KeepAlive(&mech)
-	if code := CKRV(rv); code != CKR_OK {
+		uintptr(mech.ptr()), priv)
+	runtime.KeepAlive(mech)
+	if code := rvOf(rv); code != CKR_OK {
 		if code == CKR_MECHANISM_INVALID || code == CKR_ARGUMENTS_BAD {
 			return nil, fmt.Errorf("C_DecryptInit(RSA_X_509): %s: %w", code, ErrMechanismUnsupported)
 		}
@@ -394,20 +405,24 @@ func (s *Session) DecryptRawRSA(priv Object, ct []byte) ([]byte, error) {
 
 // doDecrypt runs the two-call C_Decrypt length pattern.
 func (s *Session) doDecrypt(ct []byte) ([]byte, error) {
-	var outLen uintptr
+	// pulDataLen is a CK_ULONG in/out param (4 bytes on Windows).
+	outLen := newCKULongOut()
 	rv, _, _ := purego.SyscallN(s.m.fn(idxDecrypt), s.handle,
-		uintptr(unsafe.Pointer(&ct[0])), uintptr(len(ct)), 0, uintptr(unsafe.Pointer(&outLen)))
-	if CKRV(rv) != CKR_OK {
-		return nil, fmt.Errorf("C_Decrypt(size): %s", CKRV(rv))
+		uintptr(unsafe.Pointer(&ct[0])), uintptr(len(ct)), 0, uintptr(outLen.ptr()))
+	runtime.KeepAlive(ct)
+	runtime.KeepAlive(outLen)
+	if rvOf(rv) != CKR_OK {
+		return nil, fmt.Errorf("C_Decrypt(size): %s", rvOf(rv))
 	}
-	out := make([]byte, outLen)
+	out := make([]byte, outLen.get())
 	rv, _, _ = purego.SyscallN(s.m.fn(idxDecrypt), s.handle,
 		uintptr(unsafe.Pointer(&ct[0])), uintptr(len(ct)),
-		uintptr(unsafe.Pointer(&out[0])), uintptr(unsafe.Pointer(&outLen)))
+		uintptr(unsafe.Pointer(&out[0])), uintptr(outLen.ptr()))
 	runtime.KeepAlive(ct)
 	runtime.KeepAlive(out)
-	if CKRV(rv) != CKR_OK {
-		return nil, fmt.Errorf("C_Decrypt: %s", CKRV(rv))
+	runtime.KeepAlive(outLen)
+	if rvOf(rv) != CKR_OK {
+		return nil, fmt.Errorf("C_Decrypt: %s", rvOf(rv))
 	}
-	return out[:outLen], nil
+	return out[:outLen.get()], nil
 }

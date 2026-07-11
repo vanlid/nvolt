@@ -60,13 +60,15 @@ func ListTokensAndKeys(module string) ([]TokenListing, error) {
 		if err != nil {
 			continue // slot without a readable token; skip
 		}
-		var handle uintptr
+		// phSession is a CK_SESSION_HANDLE out-param (CK_ULONG width).
+		handle := newCKULongOut()
 		rv, _, _ := purego.SyscallN(m.fn(idxOpenSession), slot, CKF_SERIAL_SESSION,
-			0, 0, uintptr(unsafe.Pointer(&handle)))
-		if CKRV(rv) != CKR_OK {
+			0, 0, uintptr(handle.ptr()))
+		runtime.KeepAlive(handle)
+		if rvOf(rv) != CKR_OK {
 			continue
 		}
-		s := &Session{m: m, handle: handle}
+		s := &Session{m: m, handle: handle.get()}
 		keys := s.listRSAKeysOnToken(label)
 		_ = s.Close()
 		out = append(out, TokenListing{Label: label, Keys: keys})
@@ -96,29 +98,39 @@ func ListRSAKeys(module string) ([]KeyInfo, error) {
 
 // slotList returns the ids of all token-present slots.
 func (m *Module) slotList() ([]uintptr, error) {
-	var count uintptr
-	rv, _, _ := purego.SyscallN(m.fn(idxGetSlotList), 1, 0, uintptr(unsafe.Pointer(&count)))
-	if CKRV(rv) != CKR_OK {
-		return nil, fmt.Errorf("C_GetSlotList(count): %s", CKRV(rv))
+	// count is a CK_ULONG in/out param; the slot array holds CK_ULONG-width
+	// CK_SLOT_IDs (4-byte stride on Windows).
+	count := newCKULongOut()
+	rv, _, _ := purego.SyscallN(m.fn(idxGetSlotList), 1, 0, uintptr(count.ptr()))
+	runtime.KeepAlive(count)
+	if rvOf(rv) != CKR_OK {
+		return nil, fmt.Errorf("C_GetSlotList(count): %s", rvOf(rv))
 	}
-	if count == 0 {
+	n := int(count.get())
+	if n == 0 {
 		return nil, nil
 	}
-	slots := make([]uintptr, count)
+	slots := newCKULongArr(n)
 	rv, _, _ = purego.SyscallN(m.fn(idxGetSlotList), 1,
-		uintptr(unsafe.Pointer(&slots[0])), uintptr(unsafe.Pointer(&count)))
-	if CKRV(rv) != CKR_OK {
-		return nil, fmt.Errorf("C_GetSlotList: %s", CKRV(rv))
+		uintptr(slots.ptr()), uintptr(count.ptr()))
+	runtime.KeepAlive(slots)
+	runtime.KeepAlive(count)
+	if rvOf(rv) != CKR_OK {
+		return nil, fmt.Errorf("C_GetSlotList: %s", rvOf(rv))
 	}
-	return slots[:count], nil
+	out := make([]uintptr, count.get())
+	for i := range out {
+		out[i] = slots.get(i)
+	}
+	return out, nil
 }
 
 // tokenLabel reads the space-trimmed CKA label from a slot's CK_TOKEN_INFO.
 func (m *Module) tokenLabel(slot uintptr) (string, error) {
 	var info [256]byte
 	rv, _, _ := purego.SyscallN(m.fn(idxGetTokenInfo), slot, uintptr(unsafe.Pointer(&info[0])))
-	if CKRV(rv) != CKR_OK {
-		return "", fmt.Errorf("C_GetTokenInfo: %s", CKRV(rv))
+	if rvOf(rv) != CKR_OK {
+		return "", fmt.Errorf("C_GetTokenInfo: %s", rvOf(rv))
 	}
 	return string(bytes.TrimRight(info[:32], " ")), nil
 }
@@ -151,40 +163,47 @@ func (s *Session) listRSAKeysOnToken(tokenLabel string) []KeyInfo {
 
 // findRSAObjects returns all handles of RSA objects of the given class.
 func (s *Session) findRSAObjects(class uintptr) ([]Object, error) {
-	keyType := CKK_RSA
-	attrs := []CK_ATTRIBUTE{
-		{Type: CKA_CLASS, Value: unsafe.Pointer(&class), Len: unsafe.Sizeof(class)},
-		{Type: CKA_KEY_TYPE, Value: unsafe.Pointer(&keyType), Len: unsafe.Sizeof(keyType)},
+	// CKA_CLASS/CKA_KEY_TYPE values are CK_ULONGs (encodeCKULong sizes per ABI).
+	attrs := []attr{
+		{typ: CKA_CLASS, val: encodeCKULong(class)},
+		{typ: CKA_KEY_TYPE, val: encodeCKULong(CKK_RSA)},
 	}
+	tmpl := packTemplate(attrs)
 	rv, _, _ := purego.SyscallN(s.m.fn(idxFindObjectsInit), s.handle,
-		uintptr(unsafe.Pointer(&attrs[0])), uintptr(len(attrs)))
-	runtime.KeepAlive(attrs)
-	if CKRV(rv) != CKR_OK {
-		return nil, fmt.Errorf("C_FindObjectsInit: %s", CKRV(rv))
+		uintptr(tmpl.ptr()), tmpl.count())
+	runtime.KeepAlive(tmpl)
+	if rvOf(rv) != CKR_OK {
+		return nil, fmt.Errorf("C_FindObjectsInit: %s", rvOf(rv))
 	}
 
 	const batch = 32
 	var out []Object
 	for {
-		objs := make([]uintptr, batch)
-		var found uintptr
+		// phObject array (CK_ULONG-width handles) + pulObjectCount out-param.
+		objs := newCKULongArr(batch)
+		found := newCKULongOut()
 		rv, _, _ = purego.SyscallN(s.m.fn(idxFindObjects), s.handle,
-			uintptr(unsafe.Pointer(&objs[0])), uintptr(batch), uintptr(unsafe.Pointer(&found)))
-		if CKRV(rv) != CKR_OK {
+			uintptr(objs.ptr()), uintptr(batch), uintptr(found.ptr()))
+		runtime.KeepAlive(objs)
+		runtime.KeepAlive(found)
+		if rvOf(rv) != CKR_OK {
 			_, _, _ = purego.SyscallN(s.m.fn(idxFindObjectsFinal), s.handle)
-			return nil, fmt.Errorf("C_FindObjects: %s", CKRV(rv))
+			return nil, fmt.Errorf("C_FindObjects: %s", rvOf(rv))
 		}
-		if found == 0 {
+		f := int(found.get())
+		if f == 0 {
 			break
 		}
-		out = append(out, objs[:found]...)
-		if found < batch {
+		for i := 0; i < f; i++ {
+			out = append(out, objs.get(i))
+		}
+		if f < batch {
 			break
 		}
 	}
 	rvF, _, _ := purego.SyscallN(s.m.fn(idxFindObjectsFinal), s.handle)
-	if CKRV(rvF) != CKR_OK {
-		return nil, fmt.Errorf("C_FindObjectsFinal: %s", CKRV(rvF))
+	if rvOf(rvF) != CKR_OK {
+		return nil, fmt.Errorf("C_FindObjectsFinal: %s", rvOf(rvF))
 	}
 	return out, nil
 }
