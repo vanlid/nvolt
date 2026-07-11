@@ -2,6 +2,9 @@ package crypto
 
 import (
 	"bytes"
+	"crypto"
+	"crypto/rsa"
+	"io"
 	"testing"
 )
 
@@ -221,6 +224,30 @@ func TestUnwrapKeyAcceptsDecrypter(t *testing.T) {
 	wrapped, _ := WrapKey(&key.PublicKey, aes)
 	// *rsa.PrivateKey satisfies crypto.Decrypter
 	got, err := UnwrapKey(key, wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, aes) {
+		t.Fatal("mismatch")
+	}
+}
+
+// fakeDecrypter is a crypto.Decrypter that is NOT *rsa.PrivateKey, used to
+// prove UnwrapKey accepts the interface (this would not compile under the
+// old *rsa.PrivateKey signature).
+type fakeDecrypter struct{ inner *rsa.PrivateKey }
+
+func (f fakeDecrypter) Public() crypto.PublicKey { return f.inner.Public() }
+func (f fakeDecrypter) Decrypt(r io.Reader, msg []byte, opts crypto.DecrypterOpts) ([]byte, error) {
+	return f.inner.Decrypt(r, msg, opts)
+}
+
+func TestUnwrapKeyAcceptsNonRSADecrypter(t *testing.T) {
+	key, _ := GenerateRSAKeypair()
+	aes, _ := GenerateAESKey()
+	wrapped, _ := WrapKey(&key.PublicKey, aes)
+	var dec crypto.Decrypter = fakeDecrypter{inner: key} // concrete type is fakeDecrypter, not *rsa.PrivateKey
+	got, err := UnwrapKey(dec, wrapped)
 	if err != nil {
 		t.Fatal(err)
 	}
