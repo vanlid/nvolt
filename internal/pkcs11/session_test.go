@@ -55,6 +55,37 @@ func TestGenerateRSAKeyPair(t *testing.T) {
 	}
 }
 
+// TestTokenFlagsReadCorrectly proves the CK_TOKEN_INFO.flags offset (96 bytes
+// into the struct, per Cryptoki 2.40 LP64 layout: label[32] +
+// manufacturerID[32] + model[16] + serialNumber[16]) is read correctly by
+// findSlot/openSession. SoftHSM requires a normal user PIN, so it must report
+// LoginRequired()==true and ProtectedAuthPath()==false; a wrong offset would
+// read garbage bytes from manufacturerID/model/serialNumber instead and very
+// likely flip one or both of these booleans.
+//
+// The protected-auth-path branch (CKF_PROTECTED_AUTHENTICATION_PATH set, e.g.
+// a pinpad reader) cannot be exercised here: SoftHSM never sets that flag, and
+// there is no way to fake it without undermining what this test proves.
+func TestTokenFlagsReadCorrectly(t *testing.T) {
+	m, err := Open(testModulePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	sess, err := m.OpenSession("nvolt-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	if !sess.LoginRequired() {
+		t.Fatal("LoginRequired() = false, want true for SoftHSM token")
+	}
+	if sess.ProtectedAuthPath() {
+		t.Fatal("ProtectedAuthPath() = true, want false for SoftHSM token")
+	}
+}
+
 func TestOAEPRoundTripAgainstToken(t *testing.T) {
 	m, err := Open(testModulePath(t))
 	if err != nil {
