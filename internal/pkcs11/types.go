@@ -17,6 +17,7 @@ const (
 
 // Object classes, key types, session/user flags, mechanisms.
 const (
+	CKO_PUBLIC_KEY     uintptr = 2
 	CKO_PRIVATE_KEY    uintptr = 3
 	CKK_RSA            uintptr = 0
 	CKF_SERIAL_SESSION uintptr = 4
