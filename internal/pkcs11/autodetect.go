@@ -3,9 +3,29 @@ package pkcs11
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 )
+
+// DiscoveredModule describes one PKCS#11 provider library found by
+// DetectModules. Source records how it was discovered ("p11-kit", "path" or
+// "registry") so callers can label and order the results sensibly.
+type DiscoveredModule struct {
+	Path   string
+	Label  string
+	Source string
+}
+
+// cleanModuleKey returns a canonical key for a module path used to dedupe
+// DetectModules results: the cleaned absolute path when it can be resolved,
+// otherwise the cleaned original path.
+func cleanModuleKey(path string) string {
+	if abs, err := filepath.Abs(path); err == nil {
+		return filepath.Clean(abs)
+	}
+	return filepath.Clean(path)
+}
 
 // linuxModuleCandidates lists the common install paths for PKCS#11 provider
 // libraries on Linux, covering p11-kit, OpenSC and YubiKey's ykcs11.
@@ -38,11 +58,16 @@ var windowsModuleCandidates = []string{
 	`C:\Program Files\Yubico\YubiKey PIV Manager\ykcs11.dll`,
 }
 
-// DefaultModulePath probes a per-OS list of common PKCS#11 module install
-// locations (p11-kit, OpenSC, YubiKey ykcs11) and returns the first one that
-// exists on disk. It returns an error listing every path it looked at when
-// none are found, so callers know to pass --module explicitly.
+// DefaultModulePath returns the path of the first PKCS#11 module discovered by
+// DetectModules (a p11-kit proxy on Unix, or a registry/common-path provider),
+// falling back to an error that lists every common location probed when nothing
+// is found, so callers know to pass --module explicitly.
 func DefaultModulePath() (string, error) {
+	if mods := DetectModules(); len(mods) > 0 {
+		return mods[0].Path, nil
+	}
+	// Nothing discovered: reuse the per-OS candidate list to produce a
+	// deterministic "not found" error naming where we looked.
 	return defaultModulePathFrom(candidatesForOS())
 }
 

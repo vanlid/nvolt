@@ -48,12 +48,44 @@ exposes without a PIN.
 Example:
   nvolt pkcs11 list --module /usr/lib/softhsm/libsofthsm2.so`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		module, err := pkcs11.ResolveModulePath(pkcs11Module)
-		if err != nil {
-			return err
+		// An explicit --module or NVOLT_PKCS11_MODULE targets a single module.
+		// Otherwise, autodiscover and list every module we find.
+		if pkcs11Module != "" || os.Getenv("NVOLT_PKCS11_MODULE") != "" {
+			module, err := pkcs11.ResolveModulePath(pkcs11Module)
+			if err != nil {
+				return err
+			}
+			return runPKCS11List(module)
 		}
-		return runPKCS11List(module)
+		return runPKCS11ListDiscovered()
 	},
+}
+
+// runPKCS11ListDiscovered enumerates PKCS#11 modules via pkcs11.DetectModules
+// and lists each one's tokens/keys under a header. A module that fails to open
+// or list (e.g. a p11-kit-client with no server) yields a warning and the scan
+// continues, so one bad provider never aborts the whole listing.
+func runPKCS11ListDiscovered() error {
+	mods := pkcs11.DetectModules()
+	if len(mods) == 0 {
+		ui.Warning("No PKCS#11 modules found (looked in common install locations); pass --module <path> or set NVOLT_PKCS11_MODULE")
+		return nil
+	}
+
+	for _, m := range mods {
+		// Section prints its argument via %s (no re-parse), but Path/Source go
+		// through PrintKeyValue -> Info which double-formats, so escape "%".
+		ui.Section(m.Label)
+		ui.PrintKeyValue("  Path", strings.ReplaceAll(m.Path, "%", "%%"))
+		ui.PrintKeyValue("  Source", m.Source)
+		if err := runPKCS11List(m.Path); err != nil {
+			ui.Warning("  Skipping %s: %s",
+				strings.ReplaceAll(m.Path, "%", "%%"),
+				strings.ReplaceAll(err.Error(), "%", "%%"))
+		}
+	}
+
+	return nil
 }
 
 func runPKCS11List(module string) error {
