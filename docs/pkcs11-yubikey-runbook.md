@@ -109,9 +109,19 @@ Start a p11-kit server exposing the module over a unix socket:
 p11-kit server --provider /usr/lib/x86_64-linux-gnu/opensc-pkcs11.so 'pkcs11:'
 ```
 
-This prints an `export P11_KIT_SERVER_ADDRESS=unix:path=...` line — that path
-(under `$XDG_RUNTIME_DIR/p11-kit/`) is the **local socket** you forward in the
-next step. Leave this command running in its own WSL terminal.
+By default `p11-kit server` **daemonizes** — it forks to the background and
+immediately returns your shell prompt, printing two lines:
+
+```
+export P11_KIT_SERVER_ADDRESS=unix:path=...
+export P11_KIT_SERVER_PID=...
+```
+
+`P11_KIT_SERVER_ADDRESS` (a path under `$XDG_RUNTIME_DIR/p11-kit/`) is the
+**local socket** you forward in the next step; the server keeps running in the
+background even after this shell command returns and even if you close the
+terminal. To stop it later, run `p11-kit server -k` (or
+`kill $P11_KIT_SERVER_PID` using the PID printed above).
 
 ## 4. SSH forward — a SEPARATE session, not VS Code's
 
@@ -162,7 +172,7 @@ sessions on the remote.
 ### Discover the key
 
 ```bash
-nvolt pkcs11 list --module /usr/lib/x86_64-linux-gnu/p11-kit-client.so
+nvolt pkcs11 list --module /usr/lib/x86_64-linux-gnu/pkcs11/p11-kit-client.so
 ```
 
 This enumerates RSA private-key objects visible on the token (label, hex id,
@@ -172,7 +182,7 @@ modulus bits) without a PIN — discovery does not log in.
 
 ```bash
 nvolt pkcs11 use \
-  --module /usr/lib/x86_64-linux-gnu/p11-kit-client.so \
+  --module /usr/lib/x86_64-linux-gnu/pkcs11/p11-kit-client.so \
   --uri 'pkcs11:token=<TOKEN>;id=%01;type=private' \
   --pin-mode prompt
 ```
@@ -181,12 +191,12 @@ Or fold enrollment into `init`/`join` directly:
 
 ```bash
 nvolt init --pkcs11 \
-  --module /usr/lib/x86_64-linux-gnu/p11-kit-client.so \
+  --module /usr/lib/x86_64-linux-gnu/pkcs11/p11-kit-client.so \
   --uri 'pkcs11:token=<TOKEN>;id=%01;type=private'
 
 # or, to join an existing vault:
 nvolt join --pkcs11 \
-  --module /usr/lib/x86_64-linux-gnu/p11-kit-client.so \
+  --module /usr/lib/x86_64-linux-gnu/pkcs11/p11-kit-client.so \
   --uri 'pkcs11:token=<TOKEN>;id=%01;type=private'
 ```
 
@@ -195,8 +205,10 @@ open a session, log in, validate the key (RSA, `>= 2048` bits, decrypt-capable),
 run an OAEP-SHA256 self-test round-trip, and — only if all of that succeeds —
 write the module path, URI, PIN mode, and the OAEP mode it proved (`native` or
 `raw`) into this machine's `machine-info.json`, replacing the software keypair.
-If a machine identity already exists, add `--force` to overwrite it (this also
-deletes any orphaned software private key left on disk).
+If a machine identity already exists, `nvolt pkcs11 use` accepts `--force` to
+overwrite it (this also deletes any orphaned software private key left on
+disk); `init --pkcs11` and `join --pkcs11` have no `--force` flag and always
+error out if a machine identity is already initialized.
 
 Flags (all under `nvolt pkcs11 use` and the `--pkcs11` branch of `init`/`join`):
 
@@ -249,7 +261,7 @@ firmware/module support):
 
 ```bash
 nvolt pkcs11 generate \
-  --module /usr/lib/x86_64-linux-gnu/p11-kit-client.so \
+  --module /usr/lib/x86_64-linux-gnu/pkcs11/p11-kit-client.so \
   --token '<TOKEN>' --label my-key --id 03 --bits 2048 --pin-mode prompt
 ```
 
@@ -291,6 +303,13 @@ straight to the remote Linux box instead of to WSL: on Windows, `usbipd bind
 --busid <BUSID>` as before; on the **remote** box, `usbip attach -r
 <windows-ip> -b <BUSID>` (requires `usbip` client tools and the `vhci-hcd`
 kernel module there, and TCP port 3240 reachable from the remote to Windows).
+
+Note: the `usbip` client binary (e.g. Debian/Ubuntu's `usbip` or
+`linux-tools-*` package) is only needed for this USB/IP-to-remote fallback —
+it's a separate tool from the WSL-kernel-integrated `usbipd attach --wsl`
+happy path in §2, which needs no `usbip` binary on the Linux side at all.
+Don't expect `usbip` to be installed (or needed) in the normal WSL flow.
+
 In that topology there's no p11-kit server/socket forward at all — `pcscd` +
 `opensc-pkcs11.so` run directly on the remote, and `nvolt` points `--module` at
 `opensc-pkcs11.so` there instead of `p11-kit-client.so`. This avoids the SSH
@@ -301,13 +320,17 @@ re-plug locally" convenience of the WSL path.
 ## 8. Paths vary by distro
 
 The `.so` paths in this runbook (`/usr/lib/x86_64-linux-gnu/opensc-pkcs11.so`,
-`/usr/lib/x86_64-linux-gnu/p11-kit-client.so`) are Debian/Ubuntu (amd64)
+`/usr/lib/x86_64-linux-gnu/pkcs11/p11-kit-client.so`) are Debian/Ubuntu (amd64)
 conventions. On other distros or architectures, find the real path with:
 
 ```bash
-dpkg -L opensc | grep pkcs11.so      # Debian/Ubuntu
+dpkg -L opensc-pkcs11 | grep pkcs11.so             # Debian/Ubuntu — opensc-pkcs11.so
+dpkg -L p11-kit-modules | grep p11-kit-client.so   # Debian/Ubuntu — p11-kit-client.so
 find / -name 'opensc-pkcs11.so' -o -name 'p11-kit-client.so' 2>/dev/null
 ```
+
+Note: `opensc-pkcs11.so` ships in the `opensc-pkcs11` package (a dependency of
+`opensc`, not `opensc` itself), so `dpkg -L opensc` will not find it.
 
 and pass whatever it reports as `--module` (or set `NVOLT_PKCS11_MODULE`, which
 every `nvolt pkcs11 *` subcommand and `init|join --pkcs11` fall back to when
