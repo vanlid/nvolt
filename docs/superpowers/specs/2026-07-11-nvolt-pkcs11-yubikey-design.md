@@ -121,10 +121,14 @@ the existing `~/.nvolt/machine.json` — no new file, keeps machine identity ato
 
 ```json
 { "source": "pkcs11",
-  "module": "/usr/lib/x86_64-linux-gnu/p11-kit-client.so",
-  "uri":    "pkcs11:token=YubiKey%20PIV;id=%03;type=private",
-  "pin_mode": "prompt" }
+  "module":    "/usr/lib/x86_64-linux-gnu/p11-kit-client.so",
+  "uri":       "pkcs11:token=YubiKey%20PIV;id=%03;type=private",
+  "pin_mode":  "prompt",
+  "oaep_mode": "native" }
 ```
+
+`oaep_mode` (`native` | `raw`) records which unwrap path was proven to work at enroll time (see
+Validation), so `pull`/`push` don't have to rediscover it.
 
 - `module` — `.so` path; overridable via `NVOLT_PKCS11_MODULE`.
 - `uri` — RFC 7512 PKCS#11 URI naming token + object; explicit `--slot/--label/--id` flags map onto it.
@@ -141,8 +145,9 @@ nvolt init --pkcs11   /   nvolt join --pkcs11            # run select-flow inste
 ```
 
 - `list` — read-only discovery (label, id, key type/size, token serial).
-- `use` — opens a session, reads the public key off the card, writes the descriptor + public key
-  into machine config, regenerates fingerprint + machine ID. The PKCS#11 analog of `machine init`.
+- `use` — opens a session, **validates** (see below), reads the public key off the card, writes the
+  descriptor + public key into machine config, regenerates fingerprint + machine ID. The PKCS#11
+  analog of `machine init`.
 - `generate` — on-card keypair (Yubico `ykcs11` supports `C_GenerateKeyPair`); if unsupported by the
   token/module, print the manual command (`ykman piv keys generate 9d …` /
   `yubico-piv-tool -a generate -s 9d …`) and instruct the user to run `pkcs11 use`.
@@ -170,6 +175,30 @@ current machine's own re-read of the master key on push also goes through `LoadD
 - OAEP mechanism not supported by token → automatic raw + software-unpad fallback (see below); if
   raw also unsupported, fail with an explicit, actionable error.
 - Touch timeout → "no touch detected" hint.
+
+## Validation & guardrails (enforced at `pkcs11 use`)
+
+nvolt's whole scheme assumes an **RSA** key that can perform **OAEP-SHA256** decrypt. Rather than
+trust that, `pkcs11 use` verifies it up front and refuses to enroll a key that won't work — turning
+a silent, hard-to-debug `pull` failure into a clear enroll-time error. Checks, in order:
+
+1. **Is it a PKCS#11 module?** `dlopen` succeeds and `C_GetFunctionList` resolves and returns a
+   valid function list of a supported cryptoki version. Otherwise: "not a PKCS#11 module: PATH".
+2. **Is the object an RSA private key?** `CKA_CLASS == CKO_PRIVATE_KEY` and
+   `CKA_KEY_TYPE == CKK_RSA`. Reject EC/other with a clear message.
+3. **Is it usable and strong enough?** `CKA_DECRYPT == true` and `CKA_MODULUS_BITS >= 2048`
+   (matches the existing `crypto.ValidateRSAKey` minimum).
+4. **Reconstruct the public key** from `CKA_MODULUS` + `CKA_PUBLIC_EXPONENT` into an
+   `*rsa.PublicKey`; store it as PEM exactly like a software machine. This is what keeps the entire
+   **wrap/push path (RSA-OAEP-SHA256) unchanged** — other machines wrap to this PEM as always.
+5. **OAEP round-trip self-test.** Generate a random 32-byte value, wrap it with the card's public
+   key using software OAEP-SHA256, then decrypt it through the token. If it round-trips → record
+   `oaep_mode: native`. If the token rejects `CKM_RSA_PKCS_OAEP`, retry via raw `CKM_RSA_X_509` +
+   software OAEP-unpad; if *that* round-trips → `oaep_mode: raw`. If neither works → refuse to
+   enroll with an actionable error. This guarantees a subsequent `pull` will succeed.
+
+Because step 4 stores a normal RSA public key and step 5 pins a working OAEP-SHA256 unwrap, the rest
+of nvolt (AES-GCM data path, wrap, fingerprint, mixed software/hardware vaults) is untouched.
 
 ## OAEP-on-card — validation spike (build FIRST)
 
