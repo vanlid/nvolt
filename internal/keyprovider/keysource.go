@@ -9,9 +9,9 @@ import (
 )
 
 // loadKeySource returns the key source configured for this machine, read
-// from ~/.nvolt/machine-info.json (MachineInfo.KeySource). If the file or
-// the field is absent, it defaults to software so existing machines keep
-// working without any migration.
+// from ~/.nvolt/machines/machine-info.json (MachineInfo.KeySource). If the
+// file or the field is absent, it defaults to software so existing machines
+// keep working without any migration.
 func loadKeySource() (types.KeySource, error) {
 	homePaths, err := vault.GetHomePaths()
 	if err != nil {
@@ -22,14 +22,9 @@ func loadKeySource() (types.KeySource, error) {
 		return types.KeySource{Source: "software"}, nil
 	}
 
-	data, err := vault.ReadFile(homePaths.MachineInfo)
+	machineInfo, err := vault.LoadMachineInfoFromFile(homePaths.MachineInfo)
 	if err != nil {
 		return types.KeySource{}, err
-	}
-
-	var machineInfo types.MachineInfo
-	if err := json.Unmarshal(data, &machineInfo); err != nil {
-		return types.KeySource{}, fmt.Errorf("failed to parse machine info: %w", err)
 	}
 
 	if machineInfo.KeySource == nil {
