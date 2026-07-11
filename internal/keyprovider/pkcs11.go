@@ -105,6 +105,40 @@ func Enroll(module, uri, pinMode string, pin func() (string, error)) (types.KeyS
 	return src, pub, nil
 }
 
+// ReadTokenPublicKey reads the RSA public key identified by uri's id from a
+// PKCS#11 token, without logging in. `machine add --pkcs11` registers an
+// existing public key (no decrypt happens), so it is no-PIN by design — and
+// on tokens like SoftHSM, RSA private-key objects are CKA_PRIVATE=true and
+// hidden pre-login anyway, so a login isn't even available here as a fallback.
+// It opens a session and delegates to pkcs11.Session.RSAPublicKeyByID, which
+// reads from the CKO_PUBLIC_KEY object (always visible pre-login) or, failing
+// that, a CKO_PRIVATE_KEY object the token happens to expose without
+// authentication.
+func ReadTokenPublicKey(module, uri string) (*rsa.PublicKey, error) {
+	token, id, err := parsePKCS11URI(uri)
+	if err != nil {
+		return nil, err
+	}
+
+	m, err := pkcs11.Open(module)
+	if err != nil {
+		return nil, err
+	}
+	defer m.Close()
+
+	sess, err := m.OpenSession(token)
+	if err != nil {
+		return nil, err
+	}
+	defer sess.Close()
+
+	pub, err := sess.RSAPublicKeyByID(id)
+	if err != nil {
+		return nil, fmt.Errorf("read RSA public key from token: %w", err)
+	}
+	return pub, nil
+}
+
 // selfTestOAEP wraps a random AES key to pub and unwraps it on the token to
 // determine which mechanism the token can perform, returning "native" or "raw".
 func selfTestOAEP(sess *pkcs11.Session, priv pkcs11.Object, pub *rsa.PublicKey) (string, error) {

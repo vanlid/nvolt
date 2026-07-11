@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"crypto/rsa"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -17,6 +18,14 @@ import (
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
+
+// ReadTokenPublicKey reads the RSA public key for the given PKCS#11 URI
+// without logging in (see keyprovider.ReadTokenPublicKey). Used by
+// `machine add --pkcs11`, which registers an existing on-card key's public
+// half and never needs to decrypt anything.
+func ReadTokenPublicKey(module, uri string) (*rsa.PublicKey, error) {
+	return keyprovider.ReadTokenPublicKey(module, uri)
+}
 
 var pkcs11Module string
 var pkcs11UseModule string
