@@ -69,8 +69,8 @@ func runPKCS11List(module string) error {
 
 	ui.Section(fmt.Sprintf("RSA keys (%d):", len(keys)))
 	for _, k := range keys {
-		// ui.PrintKeyValue -> ui.Info double-formats (see runPKCS11Use/
-		// runPKCS11Generate above): any "%" in card-derived token/key labels
+		// ui.PrintKeyValue -> ui.Info double-formats (see enrollPKCS11Machine/
+		// runPKCS11Generate below): any "%" in card-derived token/key labels
 		// gets reinterpreted as a format verb on the second pass. Escape
 		// "%" -> "%%" for consistency with those sibling commands.
 		ui.PrintKeyValue("  Token", ui.Cyan(strings.ReplaceAll(k.TokenLabel, "%", "%%")))

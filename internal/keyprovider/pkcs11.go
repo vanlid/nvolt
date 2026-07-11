@@ -104,7 +104,6 @@ func selfTestOAEP(sess *pkcs11.Session, priv pkcs11.Object, pub *rsa.PublicKey) 
 		return "", fmt.Errorf("self-test: wrap key: %w", err)
 	}
 
-	// Prefer native OAEP-SHA256.
 	if got, err := sess.DecryptOAEPSHA256(priv, ct); err == nil && bytes.Equal(got, aes) {
 		return "native", nil
 	}

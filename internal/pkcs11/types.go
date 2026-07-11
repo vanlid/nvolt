@@ -93,5 +93,3 @@ func ckrvName(r CKRV) string {
 		return fmt.Sprintf("CKR_0x%08X", uintptr(r))
 	}
 }
-
-func unsafePtr[T any](p *T) unsafe.Pointer { return unsafe.Pointer(p) }

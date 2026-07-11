@@ -55,7 +55,7 @@ func Open(path string) (*Module, error) {
 	}
 	var fnList unsafe.Pointer
 	// CK_RV C_GetFunctionList(CK_FUNCTION_LIST_PTR_PTR)
-	rv, _, _ := purego.SyscallN(sym, uintptr(unsafePtr(&fnList)))
+	rv, _, _ := purego.SyscallN(sym, uintptr(unsafe.Pointer(&fnList)))
 	if CKRV(rv) != CKR_OK {
 		_ = purego.Dlclose(handle)
 		return nil, fmt.Errorf("C_GetFunctionList: %s", CKRV(rv))
