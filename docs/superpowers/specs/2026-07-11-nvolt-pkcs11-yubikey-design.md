@@ -40,10 +40,21 @@ software (PEM) or PKCS#11 (token). The PKCS#11 module is loaded **without cgo** 
 
 ### Decision record
 
-1. **No cgo.** Use `purego` to `dlopen` the PKCS#11 module and call `C_*` through a thin internal
-   FFI binding. Keeps a single fully-static binary and leaves the existing 6-target static release
-   matrix (`.github/workflows/release.yml`, `CGO_ENABLED=0`) unchanged. Fallback (documented only):
-   cgo + `ThalesGroup/crypto11` behind a build tag, if purego FFI proves impractical on hardware.
+1. **No cgo, phased backends behind one seam.**
+   - **Phase 1 (this branch): `purego` + native module loading.** `purego` `dlopen`s the PKCS#11
+     module (`p11-kit-client.so`, or `opensc-pkcs11.so` directly) and calls `C_*` through a thin
+     internal FFI binding — no cgo, single static binary, existing 6-target static release matrix
+     (`CGO_ENABLED=0`) unchanged. Chosen first because it debugs against standard, known-good
+     tooling and is **topology-agnostic** — it works for both WSL+p11-kit *and* the USB/IP-to-remote
+     fallback. Requires one small native file on the remote (`p11-kit-client.so`).
+   - **Phase 2 (fast-follow, designed-for now): pure-Go p11-kit RPC client.** A second key-source
+     backend that speaks the p11-kit RPC protocol directly over the forwarded socket — no native
+     libraries on the remote at all, a fully self-contained single binary. Slots behind the same
+     `crypto.Decrypter` seam with no rework; gated on Phase 1 working. `google/go-p11-kit` (pure Go,
+     server-only) is the reference for the wire codec. Only works in the p11-kit topology, which is
+     why Phase 1 (the general path) lands first.
+   - Fallback (documented only): cgo + `ThalesGroup/crypto11`, if purego FFI proves impractical on
+     hardware.
 2. **Forwarding = WSL + p11-kit** (user has WSL2 + admin). `usbipd-win` attaches the YubiKey to
    WSL2; inside WSL, `pcscd` + OpenSC + `p11-kit server` expose the module over a unix socket;
    a **separate** SSH session from WSL remote-forwards that socket to the remote; nvolt on the
@@ -51,9 +62,11 @@ software (PEM) or PKCS#11 (token). The PKCS#11 module is loaded **without cgo** 
    route VS Code through WSL). Fallback topology: USB/IP straight to the remote + `opensc-pkcs11.so`.
    nvolt is **module-agnostic** — it only ever sees "a PKCS#11 module at path X", so the forwarding
    choice never enters nvolt's code.
-3. **Scope = one branch, everything at once:** discovery (`list`), selection (`use`), on-card
+3. **Scope = Phase 1 complete in one branch:** discovery (`list`), selection (`use`), on-card
    key generation (`generate`), full pull/push wiring, SoftHSM2 CI tests, and the WSL/p11-kit
-   runbook — all in a single PR (targets `dev`).
+   runbook — all in a single PR (targets `main`) built on the Phase-1 `purego` `.so`-loading
+   backend. The Phase-2 pure-Go RPC-client backend is a separate follow-up branch, unblocked once
+   Phase 1 is validated on hardware.
 4. **PIN:** default `prompt` (no-echo TTY read at unwrap time); `env` (`NVOLT_PKCS11_PIN`) opt-in
    for automation (documented as weaker); `none` for pinpad tokens. PIN never persisted.
 
@@ -64,11 +77,15 @@ software (PEM) or PKCS#11 (token). The PKCS#11 module is loaded **without cgo** 
 The single seam. One code path on every platform (no build tags, thanks to purego).
 
 - `provider.go` — `LoadDecrypter() (dec crypto.Decrypter, close func() error, err error)`.
-  Reads the machine key-source descriptor and dispatches.
-- `software.go` — wraps `*rsa.PrivateKey` from PEM (existing behaviour).
-- `pkcs11.go` — opens a PKCS#11 session via the FFI binding, returns a token-backed
-  `crypto.Decrypter` bound to the selected key object, plus a `close` that logs out / closes the
-  session / finalizes the module.
+  Reads the machine key-source descriptor and dispatches to a **backend**. The backend interface is
+  transport-neutral: it yields a `crypto.Decrypter` + `close`, regardless of *how* the key is
+  reached. This is what lets the Phase-2 RPC-client backend drop in with no caller changes.
+- `software.go` — backend: wraps `*rsa.PrivateKey` from PEM (existing behaviour).
+- `pkcs11.go` — Phase-1 backend: opens a PKCS#11 session via the purego FFI binding, returns a
+  token-backed `crypto.Decrypter` bound to the selected key object, plus a `close` that logs out /
+  closes the session / finalizes the module.
+- `p11kit_rpc.go` — Phase-2 backend (follow-up): speaks the p11-kit RPC protocol over the forwarded
+  socket directly; same `crypto.Decrypter` output, no native module.
 
 ### 2. `internal/pkcs11/` (new) — thin purego FFI binding
 
@@ -198,6 +215,21 @@ it is the make-or-break of the feature and gates the rest of the work.
 | `internal/cli/{init,join,pull,push}.go`, `internal/vault/secrets.go` | wire-up |
 | `pkg/types/types.go` | key-source descriptor |
 | `docs/…/pkcs11-yubikey-runbook.md` | new — WSL + usbipd + p11-kit + SSH forward setup |
+
+## Alternatives considered
+
+- **cgo + `miekg/pkcs11` / `ThalesGroup/crypto11`** — the mainstream stack. Rejected as the default
+  because cgo breaks the fully-static `CGO_ENABLED=0` cross-compiled release matrix (would force a
+  build-tag split + a separate cgo artifact). Kept only as a documented fallback.
+- **`google/go-p11-kit` as a client** — rejected: it is **server-only** (lets a Go program *act as*
+  a PKCS#11 module, backed by e.g. PEM files) and bundles no card-access module, so it cannot
+  *consume* the YubiKey. It remains the reference implementation for the Phase-2 RPC-client wire
+  codec.
+- **Embedding `p11-kit-client.so` via `go:embed`** — rejected: the `.so` transitively links
+  `libp11-kit.so.0`, so embedding one file is not self-contained, and it is per-arch and fragile.
+  The Phase-2 pure-Go RPC client is the correct way to get a self-contained single binary.
+- **Static-linking p11-kit into nvolt** — rejected: requires cgo + static archives of p11-kit and
+  its deps (`libffi`, `libtasn1`), defeating the no-cgo / cross-compile goal.
 
 ## Out of scope (v1)
 
