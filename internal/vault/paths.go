@@ -193,29 +193,45 @@ func IsVaultInitialized(vaultPath string) bool {
 	return info.IsDir()
 }
 
-// IsMachineInitialized checks if the machine keypair and info exist
+// IsMachineInitialized checks if this machine has an established identity.
+//
+// machine-info.json is required in all cases. A software machine additionally
+// requires its private_key.pem on disk. A PKCS#11-backed machine deliberately
+// keeps NO software private key locally (the identity lives on the token), so
+// it is recognized as initialized from machine-info's key_source instead —
+// otherwise every runtime command (push/pull/run, via EnsureMachineInitialized)
+// would wrongly treat a hardware-backed machine as uninitialized and try to
+// generate a software keypair.
 func IsMachineInitialized() (bool, error) {
 	homePaths, err := GetHomePaths()
 	if err != nil {
 		return false, err
 	}
 
-	// Check if private key exists
-	_, err = os.Stat(homePaths.PrivateKey)
-	if os.IsNotExist(err) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("failed to check private key: %w", err)
+	// Check if machine info exists (required for both software and pkcs11).
+	if _, err := os.Stat(homePaths.MachineInfo); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to check machine info: %w", err)
 	}
 
-	// Check if machine info exists
-	_, err = os.Stat(homePaths.MachineInfo)
-	if os.IsNotExist(err) {
-		return false, nil
-	}
+	// A PKCS#11-backed identity has no local private key; treat it as
+	// initialized based on its recorded key_source.
+	mi, err := LoadMachineInfoFromFile(homePaths.MachineInfo)
 	if err != nil {
-		return false, fmt.Errorf("failed to check machine info: %w", err)
+		return false, fmt.Errorf("failed to load machine info: %w", err)
+	}
+	if mi.KeySource != nil && mi.KeySource.Source == "pkcs11" {
+		return true, nil
+	}
+
+	// Software machine: require the private key on disk.
+	if _, err := os.Stat(homePaths.PrivateKey); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to check private key: %w", err)
 	}
 
 	return true, nil

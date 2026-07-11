@@ -2,6 +2,7 @@ package vault
 
 import (
 	"bufio"
+	stdcrypto "crypto"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -374,8 +375,15 @@ func GrantMachineAccess(paths *Paths, environment, machineID string, masterKey [
 }
 
 // UnwrapMasterKey unwraps the master key for the current machine in a specific environment
-// Uses unified paths - works identically in both local and global modes
-func UnwrapMasterKey(paths *Paths, environment string) ([]byte, error) {
+// Uses unified paths - works identically in both local and global modes.
+//
+// The decrypter is supplied by the caller rather than loaded here: this package
+// (vault) must NOT import internal/keyprovider, because keyprovider already
+// imports vault (LoadPrivateKey, machine info) and doing so would create an
+// import cycle. The cli layer owns keyprovider.LoadDecrypter() and passes the
+// resulting crypto.Decrypter (software *rsa.PrivateKey or a PKCS#11-backed
+// decrypter) down here, so pull/push transparently support hardware tokens.
+func UnwrapMasterKey(paths *Paths, environment string, dec stdcrypto.Decrypter) ([]byte, error) {
 
 	// Get current machine ID
 	machineID, err := GetCurrentMachineID()
@@ -401,14 +409,8 @@ func UnwrapMasterKey(paths *Paths, environment string) ([]byte, error) {
 		return nil, fmt.Errorf("failed to decode wrapped key: %w", err)
 	}
 
-	// Load private key
-	privateKey, err := LoadPrivateKey()
-	if err != nil {
-		return nil, fmt.Errorf("failed to load private key: %w", err)
-	}
-
-	// Unwrap master key
-	masterKey, err := crypto.UnwrapKey(privateKey, wrappedKey)
+	// Unwrap master key using the caller-supplied decrypter
+	masterKey, err := crypto.UnwrapKey(dec, wrappedKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to unwrap master key: %w", err)
 	}

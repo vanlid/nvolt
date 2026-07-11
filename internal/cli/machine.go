@@ -10,6 +10,7 @@ import (
 	"github.com/iluxav/nvolt/internal/config"
 	"github.com/iluxav/nvolt/internal/crypto"
 	"github.com/iluxav/nvolt/internal/git"
+	"github.com/iluxav/nvolt/internal/keyprovider"
 	"github.com/iluxav/nvolt/internal/ui"
 	"github.com/iluxav/nvolt/internal/vault"
 	"github.com/iluxav/nvolt/pkg/types"
@@ -359,7 +360,12 @@ func runMachineGrant(machineID, environment, project string) error {
 
 	// Load master key for the environment
 	ui.Step("Loading master key")
-	masterKey, err := vault.UnwrapMasterKey(paths, environment)
+	dec, closeDec, err := keyprovider.LoadDecrypter()
+	if err != nil {
+		return fmt.Errorf("failed to load machine key: %w", err)
+	}
+	defer closeDec()
+	masterKey, err := vault.UnwrapMasterKey(paths, environment, dec)
 	if err != nil {
 		// Check if it's an access denied error
 		if strings.Contains(err.Error(), "access denied") || strings.Contains(err.Error(), "no such file or directory") {

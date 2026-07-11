@@ -34,12 +34,18 @@ access to specific environments using:
 			repo = args[0]
 		}
 
+		opts, err := pkcs11OptsFromFlags(cmd)
+		if err != nil {
+			return err
+		}
+
 		// Call the same init logic
-		return runInit(repo)
+		return runInit(repo, opts)
 	},
 }
 
 func init() {
 	joinCmd.Flags().StringP("repo", "r", "", "Git repository URL (org/repo format)")
+	addPKCS11EnrollFlags(joinCmd)
 	rootCmd.AddCommand(joinCmd)
 }

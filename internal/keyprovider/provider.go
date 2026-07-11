@@ -1,0 +1,21 @@
+// Package keyprovider abstracts loading the machine's private-key decrypter,
+// so callers don't need to know whether the key lives in a software PEM file
+// or on a PKCS#11-backed hardware token (e.g. a YubiKey).
+package keyprovider
+
+import "crypto"
+
+// LoadDecrypter returns the decrypter for THIS machine plus a close func.
+// It reads the machine key-source from machine.json; absent source ⇒ software.
+func LoadDecrypter() (crypto.Decrypter, func() error, error) {
+	src, err := loadKeySource()
+	if err != nil {
+		return nil, nil, err
+	}
+	switch src.Source {
+	case "pkcs11":
+		return loadPKCS11Decrypter(src) // Task 6
+	default:
+		return loadSoftwareDecrypter()
+	}
+}

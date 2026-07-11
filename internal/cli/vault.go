@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/iluxav/nvolt/internal/keyprovider"
 	"github.com/iluxav/nvolt/internal/ui"
 	"github.com/iluxav/nvolt/internal/vault"
 	"github.com/spf13/cobra"
@@ -204,13 +205,22 @@ func runVaultVerify() error {
 		envDirs, err := vault.ListDirs(paths.Secrets)
 		if err == nil && len(envDirs) > 0 {
 			ui.Info("Checking access to environments...")
-			for _, envDir := range envDirs {
-				envName := vault.GetDirName(envDir)
-				_, err := vault.UnwrapMasterKey(paths, envName)
-				if err != nil {
-					warnings = append(warnings, fmt.Sprintf("Current machine cannot unwrap master key for '%s': %v", envName, err))
-				} else {
-					ui.Info(fmt.Sprintf("  %s Can access '%s'", ui.BrightGreen("✓"), ui.Cyan(envName)))
+			// Load this machine's decrypter once for all environment checks.
+			// A failure here (e.g. no key / token unavailable) is a warning,
+			// not fatal: the rest of the vault report should still render.
+			dec, closeDec, derr := keyprovider.LoadDecrypter()
+			if derr != nil {
+				warnings = append(warnings, fmt.Sprintf("Cannot load machine key to check environment access: %v", derr))
+			} else {
+				defer closeDec()
+				for _, envDir := range envDirs {
+					envName := vault.GetDirName(envDir)
+					_, err := vault.UnwrapMasterKey(paths, envName, dec)
+					if err != nil {
+						warnings = append(warnings, fmt.Sprintf("Current machine cannot unwrap master key for '%s': %v", envName, err))
+					} else {
+						ui.Info(fmt.Sprintf("  %s Can access '%s'", ui.BrightGreen("✓"), ui.Cyan(envName)))
+					}
 				}
 			}
 		}
