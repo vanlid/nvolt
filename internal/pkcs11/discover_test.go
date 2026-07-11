@@ -32,3 +32,30 @@ func TestListRSAKeys(t *testing.T) {
 		t.Fatalf("nvolt-test/id=01 key not found in %+v", keys)
 	}
 }
+
+// TestListTokensAndKeysIncludesToken enumerates the SoftHSM fixture token via
+// ListTokensAndKeys (the per-token API ListRSAKeys is now built on) and
+// asserts the fixture token is represented, with its RSA keys attached.
+func TestListTokensAndKeysIncludesToken(t *testing.T) {
+	tokens, err := ListTokensAndKeys(testModulePath(t))
+	if err != nil {
+		t.Fatalf("ListTokensAndKeys: %v", err)
+	}
+	if len(tokens) == 0 {
+		t.Fatal("expected at least one token")
+	}
+
+	var found *TokenListing
+	for i := range tokens {
+		if tokens[i].Label == "nvolt-test" {
+			found = &tokens[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("nvolt-test token not found in %+v", tokens)
+	}
+	if len(found.Keys) == 0 {
+		t.Fatalf("expected nvolt-test token to have RSA keys, got none: %+v", *found)
+	}
+}

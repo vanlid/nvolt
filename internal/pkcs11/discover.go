@@ -21,12 +21,25 @@ type KeyInfo struct {
 	Bits       int
 }
 
-// ListRSAKeys enumerates RSA keys across every token-present slot of the module.
+// TokenListing describes one token seen by ListTokensAndKeys: the token's
+// label and whatever RSA keys are visible on it without a PIN. Keys is empty
+// (not omitted) for a token that has no RSA keys yet, so callers can render
+// the token as detected while pointing the user at how to create one.
+type TokenListing struct {
+	Label string
+	Keys  []KeyInfo
+}
+
+// ListTokensAndKeys enumerates every token-present slot of the module and
+// returns one TokenListing per token, including tokens with no RSA keys at
+// all (e.g. a freshly-provisioned YubiKey PIV slot): unlike ListRSAKeys, an
+// empty token is still represented in the result instead of disappearing, so
+// "card detected, no key yet" is distinguishable from "no card detected".
 // It does not log in; it reports the RSA key objects that are visible without
 // authentication (private-key objects where the token exposes them, otherwise
 // the public-key objects that describe the same keypair), deduplicated by
 // (token, id) so a keypair surfaces once.
-func ListRSAKeys(module string) ([]KeyInfo, error) {
+func ListTokensAndKeys(module string) ([]TokenListing, error) {
 	m, err := Open(module)
 	if err != nil {
 		return nil, err
@@ -41,7 +54,7 @@ func ListRSAKeys(module string) ([]KeyInfo, error) {
 		return nil, err
 	}
 
-	var out []KeyInfo
+	var out []TokenListing
 	for _, slot := range slots {
 		label, err := m.tokenLabel(slot)
 		if err != nil {
@@ -54,8 +67,29 @@ func ListRSAKeys(module string) ([]KeyInfo, error) {
 			continue
 		}
 		s := &Session{m: m, handle: handle}
-		out = append(out, s.listRSAKeysOnToken(label)...)
+		keys := s.listRSAKeysOnToken(label)
 		_ = s.Close()
+		out = append(out, TokenListing{Label: label, Keys: keys})
+	}
+	return out, nil
+}
+
+// ListRSAKeys enumerates RSA keys across every token-present slot of the
+// module, flattening ListTokensAndKeys's per-token grouping into a single
+// slice (a token with no RSA keys contributes nothing, same as before this
+// was reimplemented in terms of ListTokensAndKeys). It does not log in; it
+// reports the RSA key objects that are visible without authentication
+// (private-key objects where the token exposes them, otherwise the
+// public-key objects that describe the same keypair), deduplicated by
+// (token, id) so a keypair surfaces once.
+func ListRSAKeys(module string) ([]KeyInfo, error) {
+	tokens, err := ListTokensAndKeys(module)
+	if err != nil {
+		return nil, err
+	}
+	var out []KeyInfo
+	for _, t := range tokens {
+		out = append(out, t.Keys...)
 	}
 	return out, nil
 }

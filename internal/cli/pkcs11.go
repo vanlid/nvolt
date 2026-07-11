@@ -89,31 +89,60 @@ func runPKCS11ListDiscovered() error {
 	return nil
 }
 
+// runPKCS11List renders every token found on module, and that token's RSA
+// keys. A token with zero RSA keys (e.g. a freshly-provisioned YubiKey PIV
+// slot) is still rendered with a "no keys yet" hint instead of disappearing:
+// previously a token with no keys produced no output at all, indistinguishable
+// from the module having no card in it whatsoever.
 func runPKCS11List(module string) error {
-	keys, err := pkcs11.ListRSAKeys(module)
+	tokens, err := pkcs11.ListTokensAndKeys(module)
 	if err != nil {
 		return fmt.Errorf("failed to list PKCS#11 keys: %w", err)
 	}
 
-	if len(keys) == 0 {
-		ui.Warning("No RSA keys found on module %s", module)
+	if len(tokens) == 0 {
+		ui.Warning("No PKCS#11 token detected on module %s", module)
 		return nil
 	}
 
-	ui.Section(fmt.Sprintf("RSA keys (%d):", len(keys)))
-	for _, k := range keys {
-		// ui.PrintKeyValue -> ui.Info double-formats (see enrollPKCS11Machine/
-		// runPKCS11Generate below): any "%" in card-derived token/key labels
-		// gets reinterpreted as a format verb on the second pass. Escape
-		// "%" -> "%%" for consistency with those sibling commands.
-		ui.PrintKeyValue("  Token", ui.Cyan(strings.ReplaceAll(k.TokenLabel, "%", "%%")))
-		ui.PrintKeyValue("  Label", strings.ReplaceAll(k.Label, "%", "%%"))
-		ui.PrintKeyValue("  ID", fmt.Sprintf("%x", k.ID))
-		ui.PrintKeyValue("  Bits", fmt.Sprintf("%d", k.Bits))
-		fmt.Println()
+	ui.Section(fmt.Sprintf("Tokens (%d):", len(tokens)))
+	for _, tok := range tokens {
+		printTokenListing(tok)
 	}
 
 	return nil
+}
+
+// printTokenListing renders one token's header, then either its RSA keys or
+// (when it has none yet) a short, actionable hint for creating one on that
+// exact token so the card/token is always visibly detected, never silently
+// indistinguishable from "no card present".
+func printTokenListing(tok pkcs11.TokenListing) {
+	// ui.PrintKeyValue -> ui.Info double-formats (see enrollPKCS11Machine/
+	// runPKCS11Generate below): any "%" in card-derived token/key labels
+	// gets reinterpreted as a format verb on the second pass. Escape
+	// "%" -> "%%" for consistency with those sibling commands.
+	ui.PrintKeyValue("  Token", ui.Cyan(strings.ReplaceAll(tok.Label, "%", "%%")))
+
+	if len(tok.Keys) == 0 {
+		// ui.Info here is a plain single-pass Printf (format+args, no
+		// re-parse), so the raw (unescaped) token label is correct as a %s
+		// argument: escaping it would print a literal "%%" in the command
+		// example instead of "%".
+		ui.Info("    No RSA key yet. Create one on the card with:")
+		ui.Info("      nvolt pkcs11 generate --token %s --label nvolt --id 03 --bits 2048", tok.Label)
+		ui.Info("    (On a YubiKey you can instead use: ykman piv keys generate --algorithm RSA2048 9d pub.pem")
+		ui.Info("     && ykman piv certificates generate --subject \"CN=nvolt\" 9d pub.pem)")
+		fmt.Println()
+		return
+	}
+
+	for _, k := range tok.Keys {
+		ui.PrintKeyValue("    Label", strings.ReplaceAll(k.Label, "%", "%%"))
+		ui.PrintKeyValue("    ID", fmt.Sprintf("%x", k.ID))
+		ui.PrintKeyValue("    Bits", fmt.Sprintf("%d", k.Bits))
+		fmt.Println()
+	}
 }
 
 var pkcs11UseCmd = &cobra.Command{

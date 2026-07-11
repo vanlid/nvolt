@@ -60,6 +60,32 @@ func TestDetectModulesUnixDedup(t *testing.T) {
 	}
 }
 
+// TestDetectModulesUnixDedupSymlink asserts a common-path candidate reached
+// via a symlink is deduped against another candidate pointing straight at the
+// same physical file (e.g. /usr/lib/x86_64-linux-gnu/opensc-pkcs11.so
+// symlinked to /usr/lib/x86_64-linux-gnu/pkcs11/opensc-pkcs11.so): the two
+// paths are textually distinct, so only resolving symlinks (not just
+// filepath.Clean) collapses them to one listed module.
+func TestDetectModulesUnixDedupSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := writeTempModule(t, dir, "opensc-pkcs11.so")
+	link := filepath.Join(dir, "opensc-pkcs11-symlink.so")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	mods := detectModulesUnix(
+		[]string{filepath.Join(dir, "missing-proxy.so")},
+		[]string{link, target},
+	)
+	if len(mods) != 1 {
+		t.Fatalf("got %d modules, want 1 (symlink+target dedup): %+v", len(mods), mods)
+	}
+	if mods[0].Path != link {
+		t.Fatalf("expected first-seen path %q kept, got %+v", link, mods[0])
+	}
+}
+
 // TestDetectModulesUnixNoProxy asserts common-path providers are still listed
 // when no proxy exists.
 func TestDetectModulesUnixNoProxy(t *testing.T) {
