@@ -1,6 +1,7 @@
 package crypto
 
 import (
+	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -27,19 +28,15 @@ func WrapKey(publicKey *rsa.PublicKey, key []byte) ([]byte, error) {
 	return wrappedKey, nil
 }
 
-// UnwrapKey unwraps a symmetric key using RSA-OAEP with a private key
-func UnwrapKey(privateKey *rsa.PrivateKey, wrappedKey []byte) ([]byte, error) {
-	if privateKey == nil {
-		return nil, fmt.Errorf("private key is nil")
+// UnwrapKey unwraps a symmetric key using RSA-OAEP-SHA256 via any crypto.Decrypter.
+// *rsa.PrivateKey satisfies crypto.Decrypter, so the software backend is
+// behavior-preserving; PKCS#11-backed decrypters can be substituted transparently.
+func UnwrapKey(dec crypto.Decrypter, wrappedKey []byte) ([]byte, error) {
+	if dec == nil {
+		return nil, fmt.Errorf("decrypter is nil")
 	}
 
-	key, err := rsa.DecryptOAEP(
-		sha256.New(),
-		rand.Reader,
-		privateKey,
-		wrappedKey,
-		nil,
-	)
+	key, err := dec.Decrypt(rand.Reader, wrappedKey, &rsa.OAEPOptions{Hash: crypto.SHA256})
 	if err != nil {
 		return nil, fmt.Errorf("failed to unwrap key: %w", err)
 	}

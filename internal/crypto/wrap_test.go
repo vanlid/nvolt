@@ -215,6 +215,20 @@ func TestWrapKeyTooLarge(t *testing.T) {
 	}
 }
 
+func TestUnwrapKeyAcceptsDecrypter(t *testing.T) {
+	key, _ := GenerateRSAKeypair()
+	aes, _ := GenerateAESKey()
+	wrapped, _ := WrapKey(&key.PublicKey, aes)
+	// *rsa.PrivateKey satisfies crypto.Decrypter
+	got, err := UnwrapKey(key, wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, aes) {
+		t.Fatal("mismatch")
+	}
+}
+
 func BenchmarkWrapKey(b *testing.B) {
 	privateKey, err := GenerateRSAKeypair()
 	if err != nil {
