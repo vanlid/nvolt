@@ -77,10 +77,16 @@ func Open(path string) (*Module, error) {
 // CK_FUNCTION_LIST. The struct begins with a 2-byte CK_VERSION; how much
 // padding follows depends on how the module's Cryptoki headers were compiled —
 // naturally aligned (offset 8) or #pragma pack(1), as on Windows (offset 2).
-// Rather than assume per platform, we use the fact that the list itself holds a
-// pointer to C_GetFunctionList, which must equal the address we just called
-// (sym): the correct offset is the one whose C_GetFunctionList entry matches.
-// Both candidate reads are well within the (far larger) list, so probing never
+//
+// The fast path uses the fact that an ordinary module's list holds a pointer to
+// C_GetFunctionList equal to the address we just called (sym); the matching
+// offset is the one whose C_GetFunctionList entry equals sym. That equality does
+// NOT hold for wrapping proxies (e.g. p11-kit-proxy), which expose their own
+// internal C_GetFunctionList in the list — so we fall back to the offset whose
+// mandatory entry points are all sane addresses. A wrong offset slides the array
+// across the version/padding bytes and reads back nil or non-canonical values,
+// so this disambiguates 8 vs 2 without assuming a per-platform constant. Both
+// candidate reads stay well within the (far larger) list, so probing never
 // dereferences out of bounds.
 func detectHeaderOffset(fnList unsafe.Pointer, sym uintptr) (int, error) {
 	for _, off := range []int{8, 2} {
@@ -89,7 +95,29 @@ func detectHeaderOffset(fnList unsafe.Pointer, sym uintptr) (int, error) {
 			return off, nil
 		}
 	}
-	return 0, fmt.Errorf("could not resolve CK_FUNCTION_LIST layout: C_GetFunctionList entry did not match the module symbol")
+	for _, off := range []int{8, 2} {
+		if looksLikeFunctionTable((*[80]uintptr)(unsafe.Add(fnList, off))) {
+			return off, nil
+		}
+	}
+	return 0, fmt.Errorf("could not resolve CK_FUNCTION_LIST layout: no offset yields a valid function table")
+}
+
+// looksLikeFunctionTable reports whether the mandatory (never-optional) Cryptoki
+// entry points at this offset are all plausible code addresses: non-nil and
+// canonical (below 2^48 on the LP64/LLP64 targets nvolt supports). At a wrong
+// offset the pointer array slides across the 2-byte version and its padding,
+// shifting real pointer bytes into the high bits, so at least one mandatory
+// entry reads back as nil or non-canonical — which is how a proxy's true offset
+// is told apart from the wrong one.
+func looksLikeFunctionTable(arr *[80]uintptr) bool {
+	const canonicalMax = uintptr(1) << 48
+	for _, i := range []int{idxInitialize, idxFinalize, idxGetFunctionList} {
+		if p := arr[i]; p == 0 || p >= canonicalMax {
+			return false
+		}
+	}
+	return true
 }
 
 // Close finalizes the library (if initialized) and releases the module handle.
