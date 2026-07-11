@@ -105,8 +105,16 @@ func (m *Module) findSlot(tokenLabel string) (uintptr, error) {
 	return 0, fmt.Errorf("no token with label %q", tokenLabel)
 }
 
-// Login authenticates as the normal (user) role with the given PIN.
+// Login authenticates as the normal (user) role with the given PIN. An empty
+// pin is treated as "no login" and returns nil without calling C_Login: this
+// is the CKF_PROTECTED_AUTHENTICATION_PATH convention (pin_mode=none), and it
+// also defends against &pinB[0] on an empty slice, which would panic with an
+// index-out-of-range. Callers already guard on pin != "" before calling
+// Login, but this keeps Login itself safe for any future caller.
 func (s *Session) Login(pin string) error {
+	if len(pin) == 0 {
+		return nil
+	}
 	pinB := []byte(pin)
 	rv, _, _ := purego.SyscallN(s.m.fn(idxLogin), s.handle, CKU_USER,
 		uintptr(unsafe.Pointer(&pinB[0])), uintptr(len(pinB)))

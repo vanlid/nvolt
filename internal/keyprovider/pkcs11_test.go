@@ -53,3 +53,26 @@ func TestEnrollRejectsSub2048Key(t *testing.T) {
 		t.Fatalf("expected nil public key on rejection, got %+v", pub)
 	}
 }
+
+// TestEnrollPinModeNoneDoesNotPanic proves the pin_mode=none path in Enroll no
+// longer panics. pinentry.Read("none") returns "", and Session.Login used to
+// dereference &pinB[0] on that empty slice, index-out-of-range panicking.
+// Enroll now guards the Login call on pin != "" (mirroring the runtime
+// loadPKCS11Decrypter path), so with pin_mode=none it simply skips login. On
+// SoftHSM this is expected to surface as an ERROR (private key objects
+// require login, so FindRSAPrivateKey fails without one) — the assertion here
+// is only that it returns rather than panics.
+func TestEnrollPinModeNoneDoesNotPanic(t *testing.T) {
+	mod := os.Getenv("NVOLT_TEST_PKCS11_MODULE")
+	if mod == "" {
+		t.Skip("no module")
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("panicked: %v", r)
+		}
+	}()
+	_, _, err := Enroll(mod, "pkcs11:token=nvolt-test;id=%01;type=private", "none",
+		func() (string, error) { return "", nil })
+	t.Logf("Enroll with pin_mode=none returned: %v", err)
+}

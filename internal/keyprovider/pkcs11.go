@@ -58,8 +58,10 @@ func Enroll(module, uri, pinMode string, pin func() (string, error)) (types.KeyS
 	if err != nil {
 		return types.KeySource{}, nil, fmt.Errorf("obtain PIN: %w", err)
 	}
-	if err := sess.Login(p); err != nil {
-		return types.KeySource{}, nil, err
+	if p != "" {
+		if err := sess.Login(p); err != nil {
+			return types.KeySource{}, nil, err
+		}
 	}
 
 	priv, err := sess.FindRSAPrivateKey(id)

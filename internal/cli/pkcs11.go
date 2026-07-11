@@ -69,8 +69,12 @@ func runPKCS11List(module string) error {
 
 	ui.Section(fmt.Sprintf("RSA keys (%d):", len(keys)))
 	for _, k := range keys {
-		ui.PrintKeyValue("  Token", ui.Cyan(k.TokenLabel))
-		ui.PrintKeyValue("  Label", k.Label)
+		// ui.PrintKeyValue -> ui.Info double-formats (see runPKCS11Use/
+		// runPKCS11Generate above): any "%" in card-derived token/key labels
+		// gets reinterpreted as a format verb on the second pass. Escape
+		// "%" -> "%%" for consistency with those sibling commands.
+		ui.PrintKeyValue("  Token", ui.Cyan(strings.ReplaceAll(k.TokenLabel, "%", "%%")))
+		ui.PrintKeyValue("  Label", strings.ReplaceAll(k.Label, "%", "%%"))
 		ui.PrintKeyValue("  ID", fmt.Sprintf("%x", k.ID))
 		ui.PrintKeyValue("  Bits", fmt.Sprintf("%d", k.Bits))
 		fmt.Println()
@@ -181,7 +185,7 @@ func enrollPKCS11Machine(module, uri, pinMode string, force bool) error {
 	ui.Section("PKCS#11 machine identity enrolled")
 	ui.PrintKeyValue("  Machine ID", machineInfo.ID)
 	ui.PrintKeyValue("  Fingerprint", machineInfo.Fingerprint)
-	ui.PrintKeyValue("  Module", module)
+	ui.PrintKeyValue("  Module", strings.ReplaceAll(module, "%", "%%"))
 	// ui.PrintKeyValue -> ui.Info double-formats: PrintKeyValue's own Sprintf
 	// embeds uri literally, but Info's Fprintf(format+"\n", args...) then
 	// re-parses that combined string as a format string with zero args. Any
@@ -251,8 +255,10 @@ func runPKCS11Generate(module, token, label, idHex string, bits int, pinMode str
 	if err != nil {
 		return fmt.Errorf("failed to obtain PIN: %w", err)
 	}
-	if err := sess.Login(pin); err != nil {
-		return fmt.Errorf("failed to log in: %w", err)
+	if pin != "" {
+		if err := sess.Login(pin); err != nil {
+			return fmt.Errorf("failed to log in: %w", err)
+		}
 	}
 
 	if _, err := sess.GenerateRSAKeyPair(label, id, bits); err != nil {
