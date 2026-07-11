@@ -26,18 +26,26 @@ func UnpadOAEPSHA256(em []byte, k int) ([]byte, error) {
 
 	lHash2 := db[:hLen]
 	rest := db[hLen:]
-	// find 0x01 separator after zero padding
-	var one, index int
+
+	// Constant-time scan for the 0x01 separator that follows the zero padding.
+	// All observations are folded into a single decision value with one branch,
+	// so success/failure and the separator position never leak via control flow.
+	lookingForIndex := 1
+	index := 0
+	invalid := 0
 	for i := 0; i < len(rest); i++ {
-		if rest[i] == 1 && one == 0 {
-			one, index = 1, i
-		} else if rest[i] != 0 && one == 0 {
-			one = -1 // nonzero before separator => invalid
-		}
+		equals0 := subtle.ConstantTimeByteEq(rest[i], 0)
+		equals1 := subtle.ConstantTimeByteEq(rest[i], 1)
+		index = subtle.ConstantTimeSelect(lookingForIndex&equals1, i, index)
+		lookingForIndex = subtle.ConstantTimeSelect(equals1, 0, lookingForIndex)
+		invalid = subtle.ConstantTimeSelect(lookingForIndex&^equals0, 1, invalid)
 	}
+
 	good := subtle.ConstantTimeByteEq(y, 0)
 	good &= subtle.ConstantTimeCompare(lHash, lHash2)
-	if good != 1 || one != 1 {
+	good &= 1 ^ invalid         // no non-zero byte before the separator
+	good &= 1 ^ lookingForIndex // a separator byte was found
+	if good != 1 {
 		return nil, errors.New("oaep: decryption error")
 	}
 	return rest[index+1:], nil

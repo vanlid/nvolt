@@ -227,7 +227,21 @@ func (s *Session) DecryptRawRSA(priv Object, ct []byte) ([]byte, error) {
 		}
 		return nil, fmt.Errorf("C_DecryptInit(RSA_X_509): %s", code)
 	}
-	return s.doDecrypt(ct)
+	raw, err := s.doDecrypt(ct)
+	if err != nil {
+		return nil, err
+	}
+	// For raw RSA the plaintext block length equals the modulus length, which
+	// equals len(ct). A token may return the result as a big-endian integer
+	// with leading zero bytes trimmed; UnpadOAEPSHA256 requires exactly k bytes
+	// (the OAEP EM always starts with 0x00), so left-zero-pad to len(ct).
+	k := len(ct)
+	if len(raw) >= k {
+		return raw, nil
+	}
+	em := make([]byte, k)
+	copy(em[k-len(raw):], raw)
+	return em, nil
 }
 
 // doDecrypt runs the two-call C_Decrypt length pattern.

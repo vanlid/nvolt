@@ -158,19 +158,17 @@ func TestRawRSAOAEPRoundTripAgainstToken(t *testing.T) {
 		t.Fatalf("WrapKey: %v", err)
 	}
 
-	raw, err := sess.DecryptRawRSA(priv, wrapped)
+	// DecryptRawRSA normalizes the RSA block m = c^d mod n to exactly k bytes
+	// (the modulus size, == len(ct)), left-zero-padding if the token trimmed
+	// leading zeros. UnpadOAEPSHA256 requires exactly k bytes.
+	em, err := sess.DecryptRawRSA(priv, wrapped)
 	if err != nil {
 		t.Fatalf("DecryptRawRSA: %v", err)
 	}
 
-	// DecryptRawRSA returns the RSA block m = c^d mod n. UnpadOAEPSHA256 expects
-	// exactly k bytes (the modulus size), but a token may return the block with
-	// leading zero bytes stripped (a raw big-endian integer). OAEP's EM always
-	// begins with 0x00, so normalize by left-zero-padding to k.
 	k := (pub.N.BitLen() + 7) / 8
-	em := leftPad(raw, k)
 	if len(em) != k {
-		t.Fatalf("raw block %d bytes exceeds modulus size %d", len(raw), k)
+		t.Fatalf("raw block %d bytes != modulus size %d", len(em), k)
 	}
 
 	got, err := crypto.UnpadOAEPSHA256(em, k)
@@ -180,15 +178,4 @@ func TestRawRSAOAEPRoundTripAgainstToken(t *testing.T) {
 	if !bytes.Equal(got, aes) {
 		t.Fatalf("raw OAEP-SHA256 round-trip mismatch: got %x want %x", got, aes)
 	}
-}
-
-// leftPad returns b left-padded with zero bytes to length k. If b is already
-// k bytes (or longer) it is returned unchanged.
-func leftPad(b []byte, k int) []byte {
-	if len(b) >= k {
-		return b
-	}
-	out := make([]byte, k)
-	copy(out[k-len(b):], b)
-	return out
 }
