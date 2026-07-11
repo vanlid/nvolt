@@ -7,6 +7,7 @@ import (
 	"github.com/iluxav/nvolt/internal/config"
 	"github.com/iluxav/nvolt/internal/crypto"
 	"github.com/iluxav/nvolt/internal/git"
+	"github.com/iluxav/nvolt/internal/keyprovider"
 	"github.com/iluxav/nvolt/internal/ui"
 	"github.com/iluxav/nvolt/internal/vault"
 	"github.com/spf13/cobra"
@@ -79,11 +80,19 @@ func runSync(rotate bool, environment string, autoGrant bool) error {
 
 	var masterKey []byte
 
+	// Load this machine's decrypter once; reused by whichever branch below
+	// unwraps the existing master key (rotate re-encrypts, else re-wraps).
+	dec, closeDec, err := keyprovider.LoadDecrypter()
+	if err != nil {
+		return fmt.Errorf("failed to load machine key: %w", err)
+	}
+	defer closeDec()
+
 	if rotate {
 		ui.Step(fmt.Sprintf("Rotating master key for environment '%s'", ui.Cyan(environment)))
 
 		// Load existing master key first to re-encrypt secrets
-		oldMasterKey, err := vault.UnwrapMasterKey(paths, environment)
+		oldMasterKey, err := vault.UnwrapMasterKey(paths, environment, dec)
 		if err != nil {
 			return fmt.Errorf("failed to unwrap old master key: %w", err)
 		}
@@ -104,7 +113,7 @@ func runSync(rotate bool, environment string, autoGrant bool) error {
 		ui.Step(fmt.Sprintf("Re-wrapping master key for environment '%s'", ui.Cyan(environment)))
 
 		// Load existing master key
-		masterKey, err = vault.UnwrapMasterKey(paths, environment)
+		masterKey, err = vault.UnwrapMasterKey(paths, environment, dec)
 		if err != nil {
 			return fmt.Errorf("failed to unwrap master key: %w", err)
 		}

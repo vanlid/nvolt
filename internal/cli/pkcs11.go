@@ -97,10 +97,18 @@ Example:
 	},
 }
 
-// runPKCS11Use enrolls the on-card key at uri (via module) as this machine's
-// identity, mirroring vault.InitializeMachine's machine-info construction but
-// sourcing the keypair from the token instead of generating a software one.
+// runPKCS11Use is the `nvolt pkcs11 use` command body; it delegates to the
+// shared enrollPKCS11Machine so init/join --pkcs11 run the identical flow.
 func runPKCS11Use(module, uri, pinMode string, force bool) error {
+	return enrollPKCS11Machine(module, uri, pinMode, force)
+}
+
+// enrollPKCS11Machine enrolls the on-card key at uri (via module) as this
+// machine's identity, mirroring vault.InitializeMachine's machine-info
+// construction but sourcing the keypair from the token instead of generating a
+// software one. It is the single enroll implementation shared by
+// `nvolt pkcs11 use` and the --pkcs11 branch of init/join.
+func enrollPKCS11Machine(module, uri, pinMode string, force bool) error {
 	if module == "" {
 		return fmt.Errorf("no PKCS#11 module specified; use --module or set NVOLT_PKCS11_MODULE")
 	}

@@ -29,17 +29,73 @@ This command will:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		repo, _ := cmd.Flags().GetString("repo")
 
-		return runInit(repo)
+		opts, err := pkcs11OptsFromFlags(cmd)
+		if err != nil {
+			return err
+		}
+
+		return runInit(repo, opts)
 	},
 }
 
-func runInit(repoSpec string) error {
+// pkcs11EnrollOpts carries the --pkcs11 enrollment parameters for init/join.
+// A nil *pkcs11EnrollOpts means --pkcs11 was not set (default software path).
+type pkcs11EnrollOpts struct {
+	module  string
+	uri     string
+	pinMode string
+}
+
+// addPKCS11EnrollFlags registers the shared --pkcs11/--module/--uri/--pin-mode
+// flags on init and join.
+func addPKCS11EnrollFlags(cmd *cobra.Command) {
+	cmd.Flags().Bool("pkcs11", false, "Back this machine's identity with a PKCS#11 token instead of a software keypair")
+	cmd.Flags().String("module", os.Getenv("NVOLT_PKCS11_MODULE"), "Path to PKCS#11 module (.so) (with --pkcs11)")
+	cmd.Flags().String("uri", "", "PKCS#11 URI of the RSA key to enroll (with --pkcs11)")
+	cmd.Flags().String("pin-mode", "prompt", "How to obtain the PIN: prompt, env, or none (with --pkcs11)")
+}
+
+// pkcs11OptsFromFlags returns the enrollment options when --pkcs11 is set, or
+// nil when it is not (unchanged software init/join). It validates that the
+// required --module/--uri are present up front.
+func pkcs11OptsFromFlags(cmd *cobra.Command) (*pkcs11EnrollOpts, error) {
+	usePKCS11, _ := cmd.Flags().GetBool("pkcs11")
+	if !usePKCS11 {
+		return nil, nil
+	}
+	module, _ := cmd.Flags().GetString("module")
+	uri, _ := cmd.Flags().GetString("uri")
+	pinMode, _ := cmd.Flags().GetString("pin-mode")
+	if module == "" {
+		return nil, fmt.Errorf("--pkcs11 requires --module (or NVOLT_PKCS11_MODULE)")
+	}
+	if uri == "" {
+		return nil, fmt.Errorf("--pkcs11 requires --uri")
+	}
+	return &pkcs11EnrollOpts{module: module, uri: uri, pinMode: pinMode}, nil
+}
+
+func runInit(repoSpec string, pkcs11Opts *pkcs11EnrollOpts) error {
 	ui.PrintBanner("Initializing nvolt vault...")
 
-	// Step 1: Ensure machine keypair exists- If not, creates machine config
-	ui.Step("Checking machine keypair")
-	if err := EnsureMachineInitialized(); err != nil {
-		return fmt.Errorf("failed to initialize machine: %w", err)
+	// Step 1: Establish this machine's identity.
+	//
+	// --pkcs11 enrolls the on-card key as the identity (writing machine-info.json
+	// with NO software private key on disk). This must NOT fall through to
+	// EnsureMachineInitialized: that path keys off IsMachineInitialized(), which
+	// requires a software private_key.pem — absent by design for a hardware-backed
+	// machine — and would wrongly re-prompt to generate a software keypair.
+	// The default (software) path is unchanged.
+	if pkcs11Opts != nil {
+		ui.Step("Enrolling PKCS#11-backed machine identity")
+		if err := enrollPKCS11Machine(pkcs11Opts.module, pkcs11Opts.uri, pkcs11Opts.pinMode, false); err != nil {
+			return fmt.Errorf("failed to enroll PKCS#11 machine: %w", err)
+		}
+	} else {
+		ui.Step("Checking machine keypair")
+		if err := EnsureMachineInitialized(); err != nil {
+			return fmt.Errorf("failed to initialize machine: %w", err)
+		}
 	}
 
 	// Load machine info
@@ -238,5 +294,6 @@ func initGlobalMode(repoSpec string) error {
 
 func init() {
 	initCmd.Flags().StringP("repo", "r", "", "GitHub repository (org/repo) for global mode")
+	addPKCS11EnrollFlags(initCmd)
 	rootCmd.AddCommand(initCmd)
 }

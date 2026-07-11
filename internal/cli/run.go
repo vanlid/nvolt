@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/iluxav/nvolt/internal/crypto"
+	"github.com/iluxav/nvolt/internal/keyprovider"
 	"github.com/iluxav/nvolt/internal/ui"
 	"github.com/iluxav/nvolt/internal/vault"
 	"github.com/spf13/cobra"
@@ -64,13 +65,22 @@ func runWithSecrets(environment string, projects []string, cmdArgs []string) err
 		ui.Info(fmt.Sprintf("Loading projects: %s", ui.Cyan(strings.Join(projectNames, ", "))))
 	}
 
+	// Load this machine's decrypter ONCE for the whole run: for a PKCS#11
+	// machine this opens a single token session (one PIN entry) reused across
+	// every project's unwrap.
+	dec, closeDec, err := keyprovider.LoadDecrypter()
+	if err != nil {
+		return fmt.Errorf("failed to load machine key: %w", err)
+	}
+	defer closeDec()
+
 	// Load and merge secrets from all projects
 	allSecrets := make(map[string]string)
 	for _, projectInfo := range projectsToLoad {
 		paths := vault.GetVaultPaths(projectInfo.VaultPath, projectInfo.ProjectName)
 
 		// Unwrap master key for this project
-		masterKey, err := vault.UnwrapMasterKey(paths, environment)
+		masterKey, err := vault.UnwrapMasterKey(paths, environment, dec)
 		if err != nil {
 			return fmt.Errorf("failed to unwrap master key for project '%s': %w", projectInfo.DisplayName, err)
 		}
