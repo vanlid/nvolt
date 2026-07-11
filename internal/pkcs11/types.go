@@ -89,17 +89,40 @@ func (r CKRV) String() string { return ckrvName(r) }
 
 // ckrvName renders a CKRV as a human-readable string, naming the codes nvolt
 // distinguishes and hex-formatting the rest.
+// ckrvNames maps common Cryptoki return values to their names, so errors read
+// as e.g. "CKR_PIN_INCORRECT" instead of a raw hex code.
+var ckrvNames = map[CKRV]string{
+	0x00:  "CKR_OK",
+	0x01:  "CKR_CANCEL",
+	0x05:  "CKR_GENERAL_ERROR",
+	0x06:  "CKR_FUNCTION_FAILED",
+	0x07:  "CKR_ARGUMENTS_BAD",
+	0x30:  "CKR_DEVICE_ERROR",
+	0x54:  "CKR_FUNCTION_NOT_SUPPORTED",
+	0x60:  "CKR_KEY_HANDLE_INVALID",
+	0x70:  "CKR_MECHANISM_INVALID",
+	0x71:  "CKR_MECHANISM_PARAM_INVALID",
+	0x82:  "CKR_OBJECT_HANDLE_INVALID",
+	0xA0:  "CKR_PIN_INCORRECT",
+	0xA1:  "CKR_PIN_INVALID",
+	0xA2:  "CKR_PIN_LEN_RANGE",
+	0xA3:  "CKR_PIN_EXPIRED",
+	0xA4:  "CKR_PIN_LOCKED",
+	0xB3:  "CKR_SESSION_HANDLE_INVALID",
+	0xB5:  "CKR_SESSION_READ_ONLY",
+	0xD0:  "CKR_TEMPLATE_INCOMPLETE",
+	0xD1:  "CKR_TEMPLATE_INCONSISTENT",
+	0xE0:  "CKR_TOKEN_NOT_PRESENT",
+	0xE2:  "CKR_TOKEN_WRITE_PROTECTED",
+	0x100: "CKR_USER_ALREADY_LOGGED_IN",
+	0x101: "CKR_USER_NOT_LOGGED_IN",
+	0x102: "CKR_USER_PIN_NOT_INITIALIZED",
+	0x103: "CKR_USER_TYPE_INVALID",
+}
+
 func ckrvName(r CKRV) string {
-	switch r {
-	case CKR_OK:
-		return "CKR_OK"
-	case CKR_ARGUMENTS_BAD:
-		return "CKR_ARGUMENTS_BAD"
-	case CKR_FUNCTION_NOT_SUPPORTED:
-		return "CKR_FUNCTION_NOT_SUPPORTED"
-	case CKR_MECHANISM_INVALID:
-		return "CKR_MECHANISM_INVALID"
-	default:
-		return fmt.Sprintf("CKR_0x%08X", uintptr(r))
+	if name, ok := ckrvNames[r]; ok {
+		return name
 	}
+	return fmt.Sprintf("CKR_0x%08X", uintptr(r))
 }
