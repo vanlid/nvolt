@@ -38,6 +38,7 @@ const (
 //     out and the first pointer sits at offset 8.
 //   - Windows: the Cryptoki headers use #pragma pack(1) (no padding), so the
 //     first pointer sits at offset 2.
+//
 // Reading at the wrong offset yields misaligned/garbage pointers and a crash
 // on the first call, so ckFuncListHeaderOffset is set per platform (see
 // cryptoki_offset_unix.go / cryptoki_offset_windows.go).
