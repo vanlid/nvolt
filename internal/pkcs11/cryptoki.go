@@ -15,7 +15,8 @@ import "unsafe"
 const (
 	idxInitialize        = 0  // C_Initialize
 	idxFinalize          = 1  // C_Finalize
-	idxGetSlotList       = 4  // C_GetSlotList  (index 3 is C_GetFunctionList)
+	idxGetFunctionList   = 3  // C_GetFunctionList
+	idxGetSlotList       = 4  // C_GetSlotList
 	idxGetTokenInfo      = 6  // C_GetTokenInfo
 	idxOpenSession       = 12 // C_OpenSession
 	idxCloseSession      = 13 // C_CloseSession
@@ -31,17 +32,10 @@ const (
 )
 
 // fn returns the idx-th function pointer of the module's CK_FUNCTION_LIST.
-// The struct begins with a CK_VERSION (2 bytes); the function pointers follow
-// as an 8-byte-strided array. Where that array starts depends on how the
-// module's Cryptoki headers were compiled:
-//   - Unix: the struct is naturally aligned, so the 2-byte version is padded
-//     out and the first pointer sits at offset 8.
-//   - Windows: the Cryptoki headers use #pragma pack(1) (no padding), so the
-//     first pointer sits at offset 2.
-// Reading at the wrong offset yields misaligned/garbage pointers and a crash
-// on the first call, so ckFuncListHeaderOffset is set per platform (see
-// cryptoki_offset_unix.go / cryptoki_offset_windows.go).
+// m.headerOffset (the byte offset of the pointer array within the struct) is
+// detected at Open (see detectHeaderOffset) rather than assumed, so it is
+// correct regardless of how the module's Cryptoki headers were packed.
 func (m *Module) fn(idx int) uintptr {
-	arr := (*[80]uintptr)(unsafe.Add(m.fnList, ckFuncListHeaderOffset))
+	arr := (*[80]uintptr)(unsafe.Add(m.fnList, m.headerOffset))
 	return arr[idx]
 }
