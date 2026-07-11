@@ -141,7 +141,7 @@ func (s *Session) listRSAKeysOnToken(tokenLabel string) []KeyInfo {
 	seen := map[string]bool{}
 	var out []KeyInfo
 	for _, class := range []uintptr{CKO_PRIVATE_KEY, CKO_PUBLIC_KEY} {
-		objs, err := s.findRSAObjects(class)
+		objs, err := s.findRSAObjects(class, nil)
 		if err != nil {
 			continue
 		}
@@ -161,12 +161,18 @@ func (s *Session) listRSAKeysOnToken(tokenLabel string) []KeyInfo {
 	return out
 }
 
-// findRSAObjects returns all handles of RSA objects of the given class.
-func (s *Session) findRSAObjects(class uintptr) ([]Object, error) {
+// findRSAObjects returns all handles of RSA objects of the given class,
+// optionally filtered to a specific CKA_ID. A nil id means "no id filter"
+// (match any RSA object of the class); a non-nil id adds a CKA_ID term to
+// the search template so only the object(s) with that id are returned.
+func (s *Session) findRSAObjects(class uintptr, id []byte) ([]Object, error) {
 	// CKA_CLASS/CKA_KEY_TYPE values are CK_ULONGs (encodeCKULong sizes per ABI).
 	attrs := []attr{
 		{typ: CKA_CLASS, val: encodeCKULong(class)},
 		{typ: CKA_KEY_TYPE, val: encodeCKULong(CKK_RSA)},
+	}
+	if id != nil {
+		attrs = append(attrs, attr{typ: CKA_ID, val: id})
 	}
 	tmpl := packTemplate(attrs)
 	rv, _, _ := purego.SyscallN(s.m.fn(idxFindObjectsInit), s.handle,

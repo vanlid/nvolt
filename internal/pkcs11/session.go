@@ -232,46 +232,6 @@ func (s *Session) FindRSAPrivateKey(id []byte) (Object, error) {
 	return obj.get(0), nil
 }
 
-// findRSAObjectByID returns the RSA object of the given class whose CKA_ID
-// matches id. ok is false (with a nil error) when no such object exists, so
-// callers can try the next class instead of treating a miss as an error.
-func (s *Session) findRSAObjectByID(class uintptr, id []byte) (obj Object, ok bool, err error) {
-	attrs := []attr{
-		{typ: CKA_CLASS, val: encodeCKULong(class)},
-		{typ: CKA_KEY_TYPE, val: encodeCKULong(CKK_RSA)},
-		{typ: CKA_ID, val: id},
-	}
-	tmpl := packTemplate(attrs)
-
-	rv, _, _ := purego.SyscallN(s.m.fn(idxFindObjectsInit), s.handle,
-		uintptr(tmpl.ptr()), tmpl.count())
-	runtime.KeepAlive(tmpl)
-	if rvOf(rv) != CKR_OK {
-		return 0, false, fmt.Errorf("C_FindObjectsInit: %s", rvOf(rv))
-	}
-
-	// phObject array (1 slot) and pulObjectCount are CK_ULONG-width out-params.
-	found := newCKULongOut()
-	objs := newCKULongArr(1)
-	rv, _, _ = purego.SyscallN(s.m.fn(idxFindObjects), s.handle,
-		uintptr(objs.ptr()), 1, uintptr(found.ptr()))
-	runtime.KeepAlive(objs)
-	runtime.KeepAlive(found)
-	findErr := rvOf(rv)
-
-	rvF, _, _ := purego.SyscallN(s.m.fn(idxFindObjectsFinal), s.handle)
-	if findErr != CKR_OK {
-		return 0, false, fmt.Errorf("C_FindObjects: %s", findErr)
-	}
-	if rvOf(rvF) != CKR_OK {
-		return 0, false, fmt.Errorf("C_FindObjectsFinal: %s", rvOf(rvF))
-	}
-	if found.get() == 0 {
-		return 0, false, nil
-	}
-	return objs.get(0), true, nil
-}
-
 // RSAPublicKeyByID reads the RSA public key material (CKA_MODULUS +
 // CKA_PUBLIC_EXPONENT) for the key identified by CKA_ID id, without logging
 // in. It tries CKO_PUBLIC_KEY first — the object class every token exposes
@@ -283,14 +243,14 @@ func (s *Session) findRSAObjectByID(class uintptr, id []byte) (obj Object, ok bo
 // the private object is CKA_PRIVATE=true and invisible pre-login.
 func (s *Session) RSAPublicKeyByID(id []byte) (*rsa.PublicKey, error) {
 	for _, class := range []uintptr{CKO_PUBLIC_KEY, CKO_PRIVATE_KEY} {
-		obj, ok, err := s.findRSAObjectByID(class, id)
+		objs, err := s.findRSAObjects(class, id)
 		if err != nil {
 			return nil, err
 		}
-		if !ok {
+		if len(objs) == 0 {
 			continue
 		}
-		return s.RSAPublicKey(obj)
+		return s.RSAPublicKey(objs[0])
 	}
 	return nil, fmt.Errorf("no RSA key found for id %x", id)
 }

@@ -5,10 +5,13 @@ import (
 	"crypto/rsa"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	nvcrypto "github.com/iluxav/nvolt/internal/crypto"
 	"github.com/iluxav/nvolt/internal/hsmtest"
+	"github.com/iluxav/nvolt/internal/vault"
+	"github.com/iluxav/nvolt/pkg/types"
 )
 
 // TestMachineAddFromPubkeyFile proves machineAddPublicKey reads and decodes a
@@ -92,5 +95,84 @@ func TestMachineAddFromPKCS11(t *testing.T) {
 	}
 	if pub.N.BitLen() < 2048 {
 		t.Fatalf("expected >= 2048 bits, got %d", pub.N.BitLen())
+	}
+}
+
+// TestMachineAddExternalSourceRegistersPubkeyNoPrivateKey drives runMachineAdd
+// end-to-end (not just machineAddPublicKey) with a --pubkey external source
+// against a real local vault. It proves the registered vault MachineInfo
+// carries the provided public key with no KeySource set, that no software
+// private_key.pem is ever written to the machine's home directory (the
+// private key never passed through this process — it lives wherever the
+// caller already keeps it), and that the printed output announces the
+// registration ("Registered") without the "save this private key" hand-off
+// section that only applies to the software-keygen path (see runMachineAdd's
+// privateKeyPEM != nil branch in internal/cli/machine.go).
+func TestMachineAddExternalSourceRegistersPubkeyNoPrivateKey(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	vaultDir := t.TempDir()
+	t.Chdir(vaultDir)
+
+	vaultPath := filepath.Join(vaultDir, ".nvolt")
+	if err := vault.InitializeVaultDirectory(vaultPath); err != nil {
+		t.Fatalf("InitializeVaultDirectory: %v", err)
+	}
+
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubPEM, err := nvcrypto.EncodePublicKeyPEM(&priv.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubPath := filepath.Join(t.TempDir(), "pub.pem")
+	if err := os.WriteFile(pubPath, pubPEM, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	const machineName = "ext-machine"
+	out, err := captureStdout(func() error {
+		return runMachineAdd(machineName, machineAddSource{pubkeyFile: pubPath})
+	})
+	if err != nil {
+		t.Fatalf("runMachineAdd: %v\noutput:\n%s", err, out)
+	}
+
+	paths := vault.GetVaultPaths(vaultPath, "")
+	machines, err := vault.ListMachines(paths)
+	if err != nil {
+		t.Fatalf("ListMachines: %v", err)
+	}
+	var mi *types.MachineInfo
+	for _, m := range machines {
+		if m.Hostname == machineName {
+			mi = m
+		}
+	}
+	if mi == nil {
+		t.Fatalf("machine %q not found in vault after add; output:\n%s", machineName, out)
+	}
+	if mi.PublicKey == "" {
+		t.Fatal("expected a non-empty registered PublicKey")
+	}
+	if mi.KeySource != nil {
+		t.Fatalf("expected nil KeySource for a --pubkey-sourced machine, got %+v", mi.KeySource)
+	}
+
+	homePaths, err := vault.GetHomePaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vault.FileExists(homePaths.PrivateKey) {
+		t.Fatal("expected no software private_key.pem written for an external-source machine")
+	}
+
+	if !strings.Contains(out, "Registered") {
+		t.Fatalf("expected output to announce the registration, got:\n%s", out)
+	}
+	if strings.Contains(out, "save this securely") {
+		t.Fatalf("did not expect the software-keygen private-key hand-off text, got:\n%s", out)
 	}
 }
