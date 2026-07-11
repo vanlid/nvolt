@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	nvcrypto "github.com/iluxav/nvolt/internal/crypto"
+	"github.com/iluxav/nvolt/internal/hsmtest"
 	"github.com/iluxav/nvolt/internal/vault"
 )
 
@@ -298,5 +299,51 @@ func TestRebindSoftware_PrivkeyDoesNotMatchIdentity(t *testing.T) {
 	}
 	if string(after) != string(before) {
 		t.Fatal("private key file must be unchanged when --privkey doesn't match identity")
+	}
+}
+
+// TestRebindToHardware_NoMatchingKeyOnTokenPrintsImportHint drives runRebind's
+// --pkcs11 path against a real SoftHSM token (internal/hsmtest) whose only
+// keys are hsmtest.KeyID/WeakKeyID: a --pkcs11-uri naming an id absent from
+// the token makes keyprovider.Enroll fail with FindRSAPrivateKey's bare "no
+// RSA private key found" error (internal/pkcs11/session.go). rebindToHardware
+// must catch that case and print the pkcs11-import/ykman hint to put the key
+// on the card first, per the design's Error Handling section, instead of
+// passing the bare error through.
+func TestRebindToHardware_NoMatchingKeyOnTokenPrintsImportHint(t *testing.T) {
+	mod := hsmtest.Provision(t)
+	t.Setenv("HOME", t.TempDir())
+
+	if _, err := vault.InitializeMachine(""); err != nil {
+		t.Fatalf("InitializeMachine: %v", err)
+	}
+
+	origPKCS11, origSoftware := rebindPKCS11, rebindSoftware
+	origModule, origURI, origPinMode, origPrivkey := rebindModule, rebindURI, rebindPinMode, rebindPrivkey
+	defer func() {
+		rebindPKCS11, rebindSoftware = origPKCS11, origSoftware
+		rebindModule, rebindURI, rebindPinMode, rebindPrivkey = origModule, origURI, origPinMode, origPrivkey
+	}()
+
+	t.Setenv("NVOLT_PKCS11_PIN", hsmtest.PIN)
+	rebindPKCS11 = true
+	rebindSoftware = false
+	rebindModule = mod
+	// id=99 exists on neither hsmtest.KeyID ("01") nor WeakKeyID ("02").
+	rebindURI = "pkcs11:token=" + hsmtest.TokenLabel + ";id=%99;type=private"
+	rebindPinMode = "env"
+	rebindPrivkey = ""
+
+	err := runRebind()
+	if err == nil {
+		t.Fatal("expected runRebind to fail when the token has no key at the requested id")
+	}
+	if strings.Contains(err.Error(), "no RSA private key found") {
+		t.Fatalf("expected the bare pkcs11 error to be replaced with the import/ykman hint, got: %v", err)
+	}
+	for _, want := range []string{"put your key on the card first", "nvolt pkcs11 import", "ykman piv keys import"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected error to contain %q, got: %v", want, err)
+		}
 	}
 }

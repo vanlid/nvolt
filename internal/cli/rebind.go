@@ -4,6 +4,7 @@ import (
 	"crypto/rsa"
 	"fmt"
 	"os"
+	"strings"
 
 	nvcrypto "github.com/iluxav/nvolt/internal/crypto"
 	"github.com/iluxav/nvolt/internal/keyprovider"
@@ -27,6 +28,14 @@ var rebindCmd = &cobra.Command{
 
 func samePublicKey(a, b *rsa.PublicKey) bool {
 	return a != nil && b != nil && a.N.Cmp(b.N) == 0 && a.E == b.E
+}
+
+// isNoMatchingKeyOnToken reports whether err is the "no RSA private key found"
+// error FindRSAPrivateKey produces (internal/pkcs11/session.go) when the
+// requested id has no matching key on the token — as opposed to other Enroll
+// failures (wrong PIN, self-test failure) that should pass through unchanged.
+func isNoMatchingKeyOnToken(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "no RSA private key found")
 }
 
 func runRebind() error {
@@ -66,6 +75,11 @@ func rebindToHardware(mi *types.MachineInfo, identityPub *rsa.PublicKey, homePat
 		return pinentry.Read(rebindPinMode)
 	})
 	if err != nil {
+		if isNoMatchingKeyOnToken(err) {
+			return fmt.Errorf("no key matching this machine's identity was found on the token; " +
+				"put your key on the card first (nvolt pkcs11 import --privkey <your-key.pem> --token <label>, " +
+				"or on a YubiKey: ykman piv keys import <slot> <your-key.pem>), then re-run rebind")
+		}
 		return err
 	}
 	if !samePublicKey(cardPub, identityPub) {

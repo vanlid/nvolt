@@ -171,7 +171,7 @@ func (s *Session) findRSAObjects(class uintptr, id []byte) ([]Object, error) {
 		{typ: CKA_CLASS, val: encodeCKULong(class)},
 		{typ: CKA_KEY_TYPE, val: encodeCKULong(CKK_RSA)},
 	}
-	if id != nil {
+	if len(id) > 0 {
 		attrs = append(attrs, attr{typ: CKA_ID, val: id})
 	}
 	tmpl := packTemplate(attrs)
