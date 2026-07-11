@@ -90,6 +90,38 @@ func TestDefaultModulePathFromNotFound(t *testing.T) {
 	}
 }
 
+// TestCleanModuleKeyResolvesSymlinks asserts a symlink and its target collapse
+// to the same dedupe key, so DetectModules doesn't list the same physical
+// PKCS#11 module twice just because one common-path candidate happens to be a
+// symlink to another (e.g. opensc-pkcs11.so symlinked into pkcs11/).
+func TestCleanModuleKeyResolvesSymlinks(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real-pkcs11.so")
+	if err := os.WriteFile(target, []byte("not a real module"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	link := filepath.Join(dir, "symlink-pkcs11.so")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	targetKey := cleanModuleKey(target)
+	linkKey := cleanModuleKey(link)
+	if targetKey != linkKey {
+		t.Fatalf("cleanModuleKey(target) = %q, cleanModuleKey(link) = %q, want equal", targetKey, linkKey)
+	}
+}
+
+// TestCleanModuleKeyFallsBackWhenPathMissing asserts a nonexistent path (which
+// EvalSymlinks cannot resolve) still gets a stable, non-empty key via the
+// filepath.Abs/Clean fallback rather than an error or empty string.
+func TestCleanModuleKeyFallsBackWhenPathMissing(t *testing.T) {
+	key := cleanModuleKey("/definitely/does/not/exist/pkcs11.so")
+	if key == "" {
+		t.Fatal("expected a non-empty fallback key for a nonexistent path")
+	}
+}
+
 // TestDefaultModulePathCandidatesForOS asserts every supported GOOS has a
 // non-empty candidate list wired up (guards against a typo dropping an OS's
 // list entirely).

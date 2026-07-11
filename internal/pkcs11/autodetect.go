@@ -18,9 +18,17 @@ type DiscoveredModule struct {
 }
 
 // cleanModuleKey returns a canonical key for a module path used to dedupe
-// DetectModules results: the cleaned absolute path when it can be resolved,
-// otherwise the cleaned original path.
+// DetectModules results: the resolved (symlink-followed) absolute path, so a
+// symlink (e.g. /usr/lib/x86_64-linux-gnu/opensc-pkcs11.so) and its target
+// (e.g. /usr/lib/x86_64-linux-gnu/pkcs11/opensc-pkcs11.so) collapse to the
+// same key instead of listing the same physical module twice. Falls back to
+// the cleaned absolute path (or cleaned original path) when the path doesn't
+// exist or can't be resolved, so a not-yet-verified candidate still gets a
+// stable key.
 func cleanModuleKey(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return filepath.Clean(resolved)
+	}
 	if abs, err := filepath.Abs(path); err == nil {
 		return filepath.Clean(abs)
 	}

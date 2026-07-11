@@ -10,6 +10,7 @@ import (
 
 	"github.com/iluxav/nvolt/internal/hsmtest"
 	"github.com/iluxav/nvolt/internal/keyprovider"
+	"github.com/iluxav/nvolt/internal/pkcs11"
 	"github.com/iluxav/nvolt/internal/ui"
 	"github.com/iluxav/nvolt/internal/vault"
 	"github.com/iluxav/nvolt/pkg/types"
@@ -70,6 +71,53 @@ func TestPKCS11ListShowsKeys(t *testing.T) {
 	}
 	if !strings.Contains(out, "nvolt-test") {
 		t.Fatalf("expected key in output:\n%s", out)
+	}
+}
+
+// TestPrintTokenListingShowsEmptyTokenWithGenerateHint proves a token with no
+// RSA keys yet (e.g. a freshly-provisioned YubiKey's PIV_II slot) still
+// renders its label plus a short, actionable hint naming that exact token,
+// instead of vanishing from the output the way it did before this change
+// (which made a real card indistinguishable from "no card detected").
+func TestPrintTokenListingShowsEmptyTokenWithGenerateHint(t *testing.T) {
+	out, err := captureStdout(func() error {
+		printTokenListing(pkcs11.TokenListing{Label: "PIV_II"})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "PIV_II") {
+		t.Fatalf("expected the empty token's label in output:\n%s", out)
+	}
+	if !strings.Contains(out, "No RSA key yet") {
+		t.Fatalf("expected a 'no RSA key yet' hint in output:\n%s", out)
+	}
+	if !strings.Contains(out, "nvolt pkcs11 generate --token PIV_II") {
+		t.Fatalf("expected the generate command naming the token in output:\n%s", out)
+	}
+}
+
+// TestPrintTokenListingShowsKeysWhenPresent proves a token with keys still
+// renders each key's label/id/bits and does NOT show the empty-token hint.
+func TestPrintTokenListingShowsKeysWhenPresent(t *testing.T) {
+	out, err := captureStdout(func() error {
+		printTokenListing(pkcs11.TokenListing{
+			Label: "nvolt-test",
+			Keys: []pkcs11.KeyInfo{
+				{TokenLabel: "nvolt-test", Label: "my-key", ID: []byte{0x01}, Bits: 2048},
+			},
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "my-key") || !strings.Contains(out, "2048") {
+		t.Fatalf("expected key details in output:\n%s", out)
+	}
+	if strings.Contains(out, "No RSA key yet") {
+		t.Fatalf("did not expect the empty-token hint when keys are present:\n%s", out)
 	}
 }
 
