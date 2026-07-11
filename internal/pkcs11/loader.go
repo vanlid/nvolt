@@ -44,20 +44,20 @@ func (m *Module) initialize() error {
 
 // Open dlopens the module and resolves its function list via C_GetFunctionList.
 func Open(path string) (*Module, error) {
-	handle, err := purego.Dlopen(path, purego.RTLD_NOW|purego.RTLD_GLOBAL)
+	handle, err := dlopen(path)
 	if err != nil {
 		return nil, fmt.Errorf("dlopen %q: %w", path, err)
 	}
-	sym, err := purego.Dlsym(handle, "C_GetFunctionList")
+	sym, err := dlsym(handle, "C_GetFunctionList")
 	if err != nil {
-		_ = purego.Dlclose(handle)
+		_ = dlclose(handle)
 		return nil, fmt.Errorf("not a PKCS#11 module (no C_GetFunctionList): %q: %w", path, err)
 	}
 	var fnList unsafe.Pointer
 	// CK_RV C_GetFunctionList(CK_FUNCTION_LIST_PTR_PTR)
 	rv, _, _ := purego.SyscallN(sym, uintptr(unsafe.Pointer(&fnList)))
 	if CKRV(rv) != CKR_OK {
-		_ = purego.Dlclose(handle)
+		_ = dlclose(handle)
 		return nil, fmt.Errorf("C_GetFunctionList: %s", CKRV(rv))
 	}
 	return &Module{handle: handle, fnList: fnList}, nil
@@ -72,7 +72,7 @@ func (m *Module) Close() error {
 		// Best-effort C_Finalize; ignore its return so Dlclose always runs.
 		_, _, _ = purego.SyscallN(m.fn(idxFinalize), 0)
 	}
-	err := purego.Dlclose(m.handle)
+	err := dlclose(m.handle)
 	m.handle, m.fnList = 0, nil
 	return err
 }
