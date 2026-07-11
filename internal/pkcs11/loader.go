@@ -5,6 +5,7 @@ package pkcs11
 import (
 	"fmt"
 	"sync"
+	"unsafe"
 
 	"github.com/ebitengine/purego"
 )
@@ -12,7 +13,14 @@ import (
 // Module is an opened PKCS#11 provider.
 type Module struct {
 	handle uintptr // dlopen handle
-	fnList uintptr // CK_FUNCTION_LIST_PTR
+
+	// fnList is the raw CK_FUNCTION_LIST_PTR returned by C_GetFunctionList. It
+	// is kept as unsafe.Pointer (not uintptr) so cryptoki.go's fn() can read it
+	// back with plain Pointer arithmetic (unsafe.Add) instead of converting a
+	// stored uintptr back to unsafe.Pointer, which `go vet`'s unsafeptr check
+	// (rightly) flags as a possible misuse since it can't verify the uintptr
+	// still denotes a live pointer.
+	fnList unsafe.Pointer
 
 	initOnce    sync.Once
 	initErr     error
@@ -45,7 +53,7 @@ func Open(path string) (*Module, error) {
 		_ = purego.Dlclose(handle)
 		return nil, fmt.Errorf("not a PKCS#11 module (no C_GetFunctionList): %q: %w", path, err)
 	}
-	var fnList uintptr
+	var fnList unsafe.Pointer
 	// CK_RV C_GetFunctionList(CK_FUNCTION_LIST_PTR_PTR)
 	rv, _, _ := purego.SyscallN(sym, uintptr(unsafePtr(&fnList)))
 	if CKRV(rv) != CKR_OK {
@@ -65,6 +73,6 @@ func (m *Module) Close() error {
 		_, _, _ = purego.SyscallN(m.fn(idxFinalize), 0)
 	}
 	err := purego.Dlclose(m.handle)
-	m.handle, m.fnList = 0, 0
+	m.handle, m.fnList = 0, nil
 	return err
 }

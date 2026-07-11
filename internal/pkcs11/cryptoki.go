@@ -34,7 +34,6 @@ const (
 // The struct begins with a CK_VERSION (2 bytes) padded to pointer alignment
 // (8 bytes on linux/amd64); function pointers follow as a packed array.
 func (m *Module) fn(idx int) uintptr {
-	base := unsafe.Pointer(m.fnList)
-	arr := (*[80]uintptr)(unsafe.Add(base, 8)) // skip CK_VERSION + pad
+	arr := (*[80]uintptr)(unsafe.Add(m.fnList, 8)) // skip CK_VERSION + pad
 	return arr[idx]
 }

@@ -19,7 +19,7 @@ func TestOpenReturnsModuleWithFunctionList(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer m.Close()
-	if m.fnList == 0 {
+	if m.fnList == nil {
 		t.Fatal("expected non-nil CK_FUNCTION_LIST pointer")
 	}
 }
