@@ -20,6 +20,7 @@ const (
 	CKO_PUBLIC_KEY     uintptr = 2
 	CKO_PRIVATE_KEY    uintptr = 3
 	CKK_RSA            uintptr = 0
+	CKF_RW_SESSION     uintptr = 2
 	CKF_SERIAL_SESSION uintptr = 4
 	CKU_USER           uintptr = 1
 	CKM_RSA_PKCS_OAEP  uintptr = 0x00000009
@@ -27,6 +28,8 @@ const (
 	CKG_MGF1_SHA256    uintptr = 0x00000002
 	CKZ_DATA_SPECIFIED uintptr = 1
 	CKM_SHA256         uintptr = 0x00000250
+
+	CKM_RSA_PKCS_KEY_PAIR_GEN uintptr = 0x00000000
 )
 
 // Attribute types.
@@ -35,7 +38,15 @@ const (
 	CKA_KEY_TYPE        uintptr = 0x00000100
 	CKA_ID              uintptr = 0x00000102
 	CKA_LABEL           uintptr = 0x00000003
+	CKA_TOKEN           uintptr = 0x00000001
+	CKA_PRIVATE         uintptr = 0x00000002
+	CKA_SENSITIVE       uintptr = 0x00000103
+	CKA_ENCRYPT         uintptr = 0x00000104
 	CKA_DECRYPT         uintptr = 0x00000105
+	CKA_WRAP            uintptr = 0x00000106
+	CKA_UNWRAP          uintptr = 0x00000107
+	CKA_SIGN            uintptr = 0x00000108
+	CKA_VERIFY          uintptr = 0x0000010A
 	CKA_MODULUS         uintptr = 0x00000120
 	CKA_MODULUS_BITS    uintptr = 0x00000121
 	CKA_PUBLIC_EXPONENT uintptr = 0x00000122

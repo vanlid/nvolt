@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strings"
@@ -21,6 +22,13 @@ var pkcs11UseModule string
 var pkcs11UseURI string
 var pkcs11UsePinMode string
 var pkcs11UseForce bool
+
+var pkcs11GenModule string
+var pkcs11GenToken string
+var pkcs11GenLabel string
+var pkcs11GenID string
+var pkcs11GenBits int
+var pkcs11GenPinMode string
 
 var pkcs11Cmd = &cobra.Command{
 	Use:   "pkcs11",
@@ -182,6 +190,77 @@ func runPKCS11Use(module, uri, pinMode string, force bool) error {
 	return nil
 }
 
+var pkcs11GenerateCmd = &cobra.Command{
+	Use:   "generate",
+	Short: "Generate an RSA keypair on a PKCS#11 token",
+	Long: `Generate an RSA keypair directly on a PKCS#11 token (SoftHSM, and
+tokens that expose C_GenerateKeyPair). The private key never leaves the device.
+
+Example:
+  nvolt pkcs11 generate --module /usr/lib/softhsm/libsofthsm2.so \
+    --token nvolt-test --label my-key --id 03 --bits 2048`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runPKCS11Generate(pkcs11GenModule, pkcs11GenToken, pkcs11GenLabel, pkcs11GenID, pkcs11GenBits, pkcs11GenPinMode)
+	},
+}
+
+// runPKCS11Generate opens a session on the named token, logs in, and generates
+// an RSA keypair on-card via C_GenerateKeyPair.
+func runPKCS11Generate(module, token, label, idHex string, bits int, pinMode string) error {
+	if module == "" {
+		return fmt.Errorf("no PKCS#11 module specified; use --module or set NVOLT_PKCS11_MODULE")
+	}
+	if token == "" {
+		return fmt.Errorf("no PKCS#11 token specified; use --token")
+	}
+	if label == "" {
+		return fmt.Errorf("no key label specified; use --label")
+	}
+	id, err := hex.DecodeString(idHex)
+	if err != nil {
+		return fmt.Errorf("invalid --id (must be hex, e.g. 03): %w", err)
+	}
+	if len(id) == 0 {
+		return fmt.Errorf("no key id specified; use --id (hex, e.g. 03)")
+	}
+	if bits < 2048 {
+		return fmt.Errorf("--bits must be at least 2048 (got %d)", bits)
+	}
+
+	m, err := pkcs11.Open(module)
+	if err != nil {
+		return fmt.Errorf("failed to open PKCS#11 module: %w", err)
+	}
+	defer m.Close()
+
+	sess, err := m.OpenSession(token)
+	if err != nil {
+		return fmt.Errorf("failed to open session on token %q: %w", token, err)
+	}
+	defer sess.Close()
+
+	pin, err := pinentry.Read(pinMode)
+	if err != nil {
+		return fmt.Errorf("failed to obtain PIN: %w", err)
+	}
+	if err := sess.Login(pin); err != nil {
+		return fmt.Errorf("failed to log in: %w", err)
+	}
+
+	if _, err := sess.GenerateRSAKeyPair(label, id, bits); err != nil {
+		return fmt.Errorf("failed to generate RSA keypair: %w", err)
+	}
+
+	ui.Section("On-card RSA keypair generated")
+	ui.PrintKeyValue("  Token", ui.Cyan(token))
+	ui.PrintKeyValue("  Label", label)
+	ui.PrintKeyValue("  ID", fmt.Sprintf("%x", id))
+	ui.PrintKeyValue("  Bits", fmt.Sprintf("%d", bits))
+	ui.Success("RSA-%d keypair created on-card (private key non-exportable)", bits)
+
+	return nil
+}
+
 func init() {
 	pkcs11Cmd.AddCommand(pkcs11ListCmd)
 	pkcs11ListCmd.Flags().StringVar(&pkcs11Module, "module", os.Getenv("NVOLT_PKCS11_MODULE"), "Path to PKCS#11 module (.so)")
@@ -192,6 +271,17 @@ func init() {
 	pkcs11UseCmd.Flags().StringVar(&pkcs11UsePinMode, "pin-mode", "prompt", "How to obtain the PIN: prompt, env, or none")
 	pkcs11UseCmd.Flags().BoolVar(&pkcs11UseForce, "force", false, "Overwrite an existing machine identity")
 	_ = pkcs11UseCmd.MarkFlagRequired("uri")
+
+	pkcs11Cmd.AddCommand(pkcs11GenerateCmd)
+	pkcs11GenerateCmd.Flags().StringVar(&pkcs11GenModule, "module", os.Getenv("NVOLT_PKCS11_MODULE"), "Path to PKCS#11 module (.so)")
+	pkcs11GenerateCmd.Flags().StringVar(&pkcs11GenToken, "token", "", "Token label to generate the key on (required)")
+	pkcs11GenerateCmd.Flags().StringVar(&pkcs11GenLabel, "label", "", "CKA_LABEL for the new key (required)")
+	pkcs11GenerateCmd.Flags().StringVar(&pkcs11GenID, "id", "", "CKA_ID for the new key, hex (e.g. 03) (required)")
+	pkcs11GenerateCmd.Flags().IntVar(&pkcs11GenBits, "bits", 2048, "RSA modulus size in bits")
+	pkcs11GenerateCmd.Flags().StringVar(&pkcs11GenPinMode, "pin-mode", "prompt", "How to obtain the PIN: prompt, env, or none")
+	_ = pkcs11GenerateCmd.MarkFlagRequired("token")
+	_ = pkcs11GenerateCmd.MarkFlagRequired("label")
+	_ = pkcs11GenerateCmd.MarkFlagRequired("id")
 
 	rootCmd.AddCommand(pkcs11Cmd)
 }

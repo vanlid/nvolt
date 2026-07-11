@@ -14,6 +14,44 @@ import (
 	"github.com/iluxav/nvolt/internal/crypto"
 )
 
+// TestGenerateRSAKeyPair proves on-card RSA keypair generation via
+// C_GenerateKeyPair end to end: it generates a fresh 2048-bit key (id 0x03,
+// distinct from the setup script's id 01/02 keys), then FindRSAPrivateKey must
+// locate it and RSAPublicKey must report a 2048-bit modulus. SoftHSM supports
+// C_GenerateKeyPair, so this MUST pass (not skip).
+func TestGenerateRSAKeyPair(t *testing.T) {
+	m, err := Open(testModulePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	sess, err := m.OpenSession("nvolt-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	if err := sess.Login("1234"); err != nil {
+		t.Fatal(err)
+	}
+
+	id := []byte{0x03}
+	if _, err := sess.GenerateRSAKeyPair("nvolt-gen", id, 2048); err != nil {
+		t.Fatalf("GenerateRSAKeyPair: %v", err)
+	}
+
+	priv, err := sess.FindRSAPrivateKey(id)
+	if err != nil {
+		t.Fatalf("FindRSAPrivateKey after generate: %v", err)
+	}
+	pub, err := sess.RSAPublicKey(priv)
+	if err != nil {
+		t.Fatalf("RSAPublicKey: %v", err)
+	}
+	if bits := pub.N.BitLen(); bits != 2048 {
+		t.Fatalf("generated key is %d bits, want 2048", bits)
+	}
+}
+
 func TestOAEPRoundTripAgainstToken(t *testing.T) {
 	m, err := Open(testModulePath(t))
 	if err != nil {

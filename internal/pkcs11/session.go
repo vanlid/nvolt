@@ -40,7 +40,11 @@ func (m *Module) OpenSession(tokenLabel string) (*Session, error) {
 		return nil, err
 	}
 	var handle uintptr
-	rv, _, _ := purego.SyscallN(m.fn(idxOpenSession), slot, CKF_SERIAL_SESSION,
+	// Open read-write (CKF_RW_SESSION): a RW session is a strict superset of a
+	// read-only one for the decrypt/login callers, and it is required to create
+	// token objects in GenerateRSAKeyPair (CKA_TOKEN=true). The no-login
+	// discovery path in discover.go stays read-only.
+	rv, _, _ := purego.SyscallN(m.fn(idxOpenSession), slot, CKF_SERIAL_SESSION|CKF_RW_SESSION,
 		0, 0, uintptr(unsafe.Pointer(&handle)))
 	if CKRV(rv) != CKR_OK {
 		return nil, fmt.Errorf("C_OpenSession: %s", CKRV(rv))
@@ -184,6 +188,85 @@ func (s *Session) getAttribute(obj Object, attrType uintptr) ([]byte, error) {
 		return nil, fmt.Errorf("C_GetAttributeValue(0x%x): %s", attrType, CKRV(rv))
 	}
 	return buf[:tmpl[0].Len], nil
+}
+
+// GenerateRSAKeyPair generates an RSA keypair on the token via
+// C_GenerateKeyPair(CKM_RSA_PKCS_KEY_PAIR_GEN) and returns the private-key
+// object handle. label/id tag both objects; bits is the modulus size (e.g.
+// 2048). Public exponent is fixed at 65537.
+//
+// If the token does not implement C_GenerateKeyPair (CKR_FUNCTION_NOT_SUPPORTED,
+// as some PIV tokens surface via PKCS#11), the returned error spells out the
+// manual on-card generation fallback (ykman / yubico-piv-tool).
+func (s *Session) GenerateRSAKeyPair(label string, id []byte, bits int) (Object, error) {
+	mech := CK_MECHANISM{Mechanism: CKM_RSA_PKCS_KEY_PAIR_GEN, Param: nil, ParamLen: 0}
+
+	// CK_BBOOL is a single byte; CK_TRUE == 0x01. modulusBits is a CK_ULONG
+	// (uintptr, 8 bytes on linux/amd64). Keep the backing values addressable
+	// for the whole call and pin them with runtime.KeepAlive below, exactly as
+	// FindObjects/Decrypt do with their attribute-backing slices.
+	ckTrue := []byte{0x01}
+	modulusBits := uintptr(bits)
+	publicExponent := []byte{0x01, 0x00, 0x01} // 65537
+	labelB := []byte(label)
+
+	boolAttr := func(t uintptr) CK_ATTRIBUTE {
+		return CK_ATTRIBUTE{Type: t, Value: unsafe.Pointer(&ckTrue[0]), Len: 1}
+	}
+	labelIDAttrs := func() []CK_ATTRIBUTE {
+		attrs := []CK_ATTRIBUTE{{Type: CKA_LABEL, Value: unsafe.Pointer(&labelB[0]), Len: uintptr(len(labelB))}}
+		if len(id) > 0 {
+			attrs = append(attrs, CK_ATTRIBUTE{Type: CKA_ID, Value: unsafe.Pointer(&id[0]), Len: uintptr(len(id))})
+		}
+		return attrs
+	}
+
+	pubTemplate := []CK_ATTRIBUTE{
+		{Type: CKA_MODULUS_BITS, Value: unsafe.Pointer(&modulusBits), Len: unsafe.Sizeof(modulusBits)},
+		{Type: CKA_PUBLIC_EXPONENT, Value: unsafe.Pointer(&publicExponent[0]), Len: uintptr(len(publicExponent))},
+		boolAttr(CKA_TOKEN),
+		boolAttr(CKA_ENCRYPT),
+		boolAttr(CKA_VERIFY),
+		boolAttr(CKA_WRAP),
+	}
+	pubTemplate = append(pubTemplate, labelIDAttrs()...)
+
+	privTemplate := []CK_ATTRIBUTE{
+		boolAttr(CKA_TOKEN),
+		boolAttr(CKA_PRIVATE),
+		boolAttr(CKA_SENSITIVE),
+		boolAttr(CKA_DECRYPT),
+		boolAttr(CKA_SIGN),
+		boolAttr(CKA_UNWRAP),
+	}
+	privTemplate = append(privTemplate, labelIDAttrs()...)
+
+	var pubHandle, privHandle uintptr
+	rv, _, _ := purego.SyscallN(s.m.fn(idxGenerateKeyPair), s.handle,
+		uintptr(unsafe.Pointer(&mech)),
+		uintptr(unsafe.Pointer(&pubTemplate[0])), uintptr(len(pubTemplate)),
+		uintptr(unsafe.Pointer(&privTemplate[0])), uintptr(len(privTemplate)),
+		uintptr(unsafe.Pointer(&pubHandle)), uintptr(unsafe.Pointer(&privHandle)))
+	runtime.KeepAlive(&mech)
+	runtime.KeepAlive(ckTrue)
+	runtime.KeepAlive(&modulusBits)
+	runtime.KeepAlive(publicExponent)
+	runtime.KeepAlive(labelB)
+	runtime.KeepAlive(id)
+	runtime.KeepAlive(pubTemplate)
+	runtime.KeepAlive(privTemplate)
+
+	if code := CKRV(rv); code != CKR_OK {
+		if code == CKR_FUNCTION_NOT_SUPPORTED {
+			return 0, fmt.Errorf("C_GenerateKeyPair: %s: this token does not support "+
+				"on-card key generation via PKCS#11; generate the key directly on the "+
+				"device instead, e.g.:\n"+
+				"  ykman piv keys generate 9d pub.pem\n"+
+				"  yubico-piv-tool -a generate -s 9d", code)
+		}
+		return 0, fmt.Errorf("C_GenerateKeyPair: %s", code)
+	}
+	return privHandle, nil
 }
 
 // DecryptOAEPSHA256 performs CKM_RSA_PKCS_OAEP (SHA-256, MGF1-SHA256) on the token.
