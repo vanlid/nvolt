@@ -41,6 +41,10 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # Full history + tags so `git describe` can find the latest release
+          # tag to base the dev version on.
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -53,10 +57,18 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
         run: |
-          # Extract version from git tag (remove 'v' prefix if present)
+          # Version: the git tag for a tagged release; otherwise a dev build
+          # based on the latest release tag plus the short commit SHA
+          # (e.g. v0.1.0-dev-3a13852), so `nvolt version` shows a meaningful,
+          # never-stale version. Falls back to dev-<sha> when there are no tags.
           VERSION=${GITHUB_REF#refs/tags/}
           if [[ ! "$VERSION" =~ ^v[0-9] ]]; then
-            VERSION="dev"
+            LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || true)
+            if [[ -n "$LATEST_TAG" ]]; then
+              VERSION="${LATEST_TAG}-dev-${GITHUB_SHA::7}"
+            else
+              VERSION="dev-${GITHUB_SHA::7}"
+            fi
           fi
 
           # Build with version injected
@@ -72,6 +84,9 @@ jobs:
   upload-to-r2:
     name: Upload binaries to R2
     needs: build
+    # Only tagged releases (v*) go to R2. Dev builds (workflow_dispatch) publish
+    # to GitHub Releases instead — see the github-release job below.
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -155,4 +170,50 @@ jobs:
 
           if [[ "$VERSION" =~ ^v[0-9] ]]; then
             rclone copy upload/SHA256SUMS "r2:${R2_BUCKET_NAME}/latest/" --s3-no-check-bucket --progress
+          fi
+
+  github-release:
+    name: Publish binaries to GitHub Releases
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./binaries
+
+      - name: Collect binaries + checksums
+        run: |
+          mkdir -p upload
+          find ./binaries -type f -exec mv {} ./upload/ \;
+          cp install.sh upload/install.sh
+          chmod +x upload/install.sh
+          (cd upload && sha256sum * > SHA256SUMS)
+
+      - name: Publish to GitHub Releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [[ "$GITHUB_REF" =~ ^refs/tags/v[0-9] ]]; then
+            # Tagged release: publish under the tag; pre-release for -rc tags.
+            VERSION="${GITHUB_REF#refs/tags/}"
+            PRERELEASE=""
+            [[ "$VERSION" == *-* ]] && PRERELEASE="--prerelease"
+            gh release create "$VERSION" ./upload/* \
+              --title "$VERSION" --generate-notes $PRERELEASE
+          else
+            # workflow_dispatch: a single rolling "dev" pre-release, replaced
+            # each run and pointed at the built commit. Binaries report their
+            # version via `nvolt version` (e.g. v0.1.0-dev-<sha>).
+            gh release delete dev --yes --cleanup-tag 2>/dev/null || true
+            gh release create dev ./upload/* \
+              --target "$GITHUB_SHA" \
+              --title "Development build (${GITHUB_SHA::7})" \
+              --prerelease \
+              --notes "Rolling development build — not a stable release. Run \`nvolt version\` to see the exact build."
           fi
