@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request: {}
+
+jobs:
+  test:
+    name: Build, vet, and test (incl. SoftHSM2 PKCS#11 integration)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.3"
+
+      # Proves the static, cgo-free build actually works: this is the whole
+      # point of the purego-based PKCS#11 client (no C toolchain required).
+      - name: Build (CGO_ENABLED=0)
+        run: CGO_ENABLED=0 go build ./...
+
+      # Strictly vet the new/feature packages added for PKCS#11/YubiKey
+      # support. These are vet-clean, so this must pass with zero findings.
+      - name: Vet feature packages
+        run: go vet ./internal/pkcs11/... ./internal/keyprovider/... ./internal/pinentry/... ./internal/crypto/...
+
+      # softhsm2 provides the test token; opensc provides pkcs11-tool. The
+      # integration tests provision their own isolated SoftHSM token in-code
+      # (internal/hsmtest) using these binaries — no fixture script needed.
+      - name: Install SoftHSM2 + OpenSC (pkcs11-tool)
+        run: sudo apt-get update && sudo apt-get install -y softhsm2 opensc
+
+      - name: Unit + PKCS#11 integration tests
+        run: |
+          MODULE=$(ls /usr/lib/softhsm/libsofthsm2.so /usr/lib/*/softhsm/libsofthsm2.so 2>/dev/null | head -1)
+          export NVOLT_TEST_PKCS11_MODULE="$MODULE" NVOLT_PKCS11_PIN=1234
+          # -vet=off: internal/cli has pre-existing non-constant-format vet
+          # findings (machine.go/pull.go/push.go/run.go/sync.go/vault.go, ~24
+          # findings) unrelated to this feature; new packages are vet-checked
+          # strictly above.
+          #
+          # -race is intentionally omitted: it requires CGO_ENABLED=1 and a C
+          # toolchain, which this project deliberately avoids (purego, no cgo).
+          CGO_ENABLED=0 go test -vet=off ./...
