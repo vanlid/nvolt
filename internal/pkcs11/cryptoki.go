@@ -31,9 +31,17 @@ const (
 )
 
 // fn returns the idx-th function pointer of the module's CK_FUNCTION_LIST.
-// The struct begins with a CK_VERSION (2 bytes) padded to pointer alignment
-// (8 bytes on linux/amd64); function pointers follow as a packed array.
+// The struct begins with a CK_VERSION (2 bytes); the function pointers follow
+// as an 8-byte-strided array. Where that array starts depends on how the
+// module's Cryptoki headers were compiled:
+//   - Unix: the struct is naturally aligned, so the 2-byte version is padded
+//     out and the first pointer sits at offset 8.
+//   - Windows: the Cryptoki headers use #pragma pack(1) (no padding), so the
+//     first pointer sits at offset 2.
+// Reading at the wrong offset yields misaligned/garbage pointers and a crash
+// on the first call, so ckFuncListHeaderOffset is set per platform (see
+// cryptoki_offset_unix.go / cryptoki_offset_windows.go).
 func (m *Module) fn(idx int) uintptr {
-	arr := (*[80]uintptr)(unsafe.Add(m.fnList, 8)) // skip CK_VERSION + pad
+	arr := (*[80]uintptr)(unsafe.Add(m.fnList, ckFuncListHeaderOffset))
 	return arr[idx]
 }
