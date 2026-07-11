@@ -17,10 +17,16 @@ import (
 // TestImportRSAPrivateKeyRoundTrip proves ImportRSAPrivateKey (C_CreateObject)
 // end to end: a freshly generated 2048-bit RSA key is imported onto the
 // SoftHSM fixture token, then FindRSAPrivateKey must locate it by its CKA_ID
-// and DecryptOAEPSHA256 must recover an OAEP-SHA256 ciphertext produced
-// against its public half. This proves both the marshaling (all seven RSA CRT
-// components sent to C_CreateObject) and that the resulting object is usable
-// for CKM_RSA_PKCS_OAEP.
+// and the raw-RSA path (DecryptRawRSA + crypto.UnpadOAEPSHA256 — the same
+// mechanism TestRawRSAOAEPRoundTripAgainstToken uses, since this SoftHSM only
+// supports native OAEP with SHA-1, not SHA-256) must recover an OAEP-SHA256
+// ciphertext produced against its public half. Unlike a bare C_DecryptInit
+// with CKM_RSA_PKCS_OAEP (which would t.Skip on this token), the raw-RSA
+// path exercises the full private-key operation unconditionally, so it is
+// the only step here that can catch a marshaling bug in the RSA CRT
+// components (D, primes, dP, dQ, qInv/coefficient) sent to C_CreateObject —
+// e.g. a swapped CKA_PRIME_1/CKA_PRIME_2 or wrong CKA_COEFFICIENT would fail
+// the decrypt below rather than passing silently.
 func TestImportRSAPrivateKeyRoundTrip(t *testing.T) {
 	m, err := Open(testModulePath(t))
 	if err != nil {
@@ -52,19 +58,32 @@ func TestImportRSAPrivateKeyRoundTrip(t *testing.T) {
 		t.Fatalf("find imported key: %v", err)
 	}
 
-	ct, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, &priv.PublicKey, []byte("hi"), nil)
+	msg := []byte("hi")
+	ct, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, &priv.PublicKey, msg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pt, err := sess.DecryptOAEPSHA256(obj, ct)
-	if errors.Is(err, ErrMechanismUnsupported) {
-		t.Skipf("token has no native OAEP-SHA256: %v", err)
-	}
+
+	// Decrypt on-token via the raw-RSA path (CKM_RSA_X_509, m = c^d mod n)
+	// plus software OAEP-SHA256 unpadding, exactly as
+	// TestRawRSAOAEPRoundTripAgainstToken does. This performs the real
+	// private-key operation against the imported CRT components
+	// unconditionally: no t.Skip, since it does not depend on the token's
+	// native OAEP hash support.
+	em, err := sess.DecryptRawRSA(obj, ct)
 	if err != nil {
-		t.Fatalf("decrypt with imported key: %v", err)
+		t.Fatalf("DecryptRawRSA with imported key: %v", err)
 	}
-	if string(pt) != "hi" {
-		t.Fatalf("got %q", pt)
+	k := (priv.PublicKey.N.BitLen() + 7) / 8
+	if len(em) != k {
+		t.Fatalf("raw block %d bytes != modulus size %d", len(em), k)
+	}
+	pt, err := crypto.UnpadOAEPSHA256(em, k)
+	if err != nil {
+		t.Fatalf("UnpadOAEPSHA256 with imported key: %v", err)
+	}
+	if !bytes.Equal(pt, msg) {
+		t.Fatalf("round-trip mismatch: got %q want %q", pt, msg)
 	}
 }
 

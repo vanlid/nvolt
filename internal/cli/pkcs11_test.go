@@ -283,9 +283,20 @@ func TestResolveEnrollURINonInteractiveErrorsWithoutHanging(t *testing.T) {
 // TestPKCS11ImportCreatesUsableKey drives runPKCS11Import (the pkcs11 import
 // command's RunE body) against a real SoftHSM fixture token: it writes a
 // freshly generated RSA-2048 key to a PEM file, imports it via
-// C_CreateObject, and asserts the token's own listing (ListTokensAndKeys)
-// now reports a key on that token, proving the import round-trips through
-// the real PKCS#11 FFI path (not just an in-process mock).
+// C_CreateObject, and asserts the specific imported key (id 0x09) is
+// findable on the token by that id and reports the expected 2048-bit
+// modulus, proving the import round-trips through the real PKCS#11 FFI path
+// (not just an in-process mock).
+//
+// This deliberately does not use pkcs11.ListTokensAndKeys: that function
+// opens its discovery session without logging in, and ImportRSAPrivateKey
+// creates a CKA_PRIVATE=true object with no matching public-key object, so
+// on SoftHSM the imported key is invisible pre-login regardless of whether
+// the import worked — asserting via ListTokensAndKeys would either be
+// vacuously true (satisfied by the two pre-seeded ids 01/02 from
+// hsmtest.Provision) or, if scoped to id 0x09, always false. Logging in and
+// calling FindRSAPrivateKey(id) instead targets exactly the key this test
+// imports, which the pre-seeded fixture keys (ids 01, 02) cannot satisfy.
 func TestPKCS11ImportCreatesUsableKey(t *testing.T) {
 	mod := hsmtest.Provision(t)
 	t.Setenv("NVOLT_PKCS11_PIN", "1234")
@@ -303,22 +314,40 @@ func TestPKCS11ImportCreatesUsableKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	id := []byte{0x09}
 	if err := runPKCS11Import(mod, "nvolt-test", "imported", "09", keyPath, "env"); err != nil {
 		t.Fatalf("import: %v", err)
 	}
-	// It now appears as an RSA key on the token.
-	listing, err := pkcs11.ListTokensAndKeys(mod)
+
+	// Assert the specific imported key (id 0x09) is present, not merely that
+	// the token has *some* key: hsmtest.Provision pre-seeds "nvolt-test" with
+	// two RSA keys (id 01, 02) before this test ever runs runPKCS11Import, so
+	// a bare "token has keys" check would pass even if the import were a
+	// no-op. FindRSAPrivateKey(id) searches by CKA_ID, so ids 01/02 cannot
+	// satisfy it.
+	m, err := pkcs11.Open(mod)
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := false
-	for _, tl := range listing {
-		if tl.Label == "nvolt-test" && len(tl.Keys) > 0 {
-			found = true
-		}
+	defer m.Close()
+	sess, err := m.OpenSession("nvolt-test")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !found {
-		t.Fatal("imported key not found on token")
+	defer sess.Close()
+	if err := sess.Login("1234"); err != nil {
+		t.Fatal(err)
+	}
+	obj, err := sess.FindRSAPrivateKey(id)
+	if err != nil {
+		t.Fatalf("imported key (id 0x09) not found on token: %v", err)
+	}
+	pub, err := sess.RSAPublicKey(obj)
+	if err != nil {
+		t.Fatalf("RSAPublicKey on imported key: %v", err)
+	}
+	if pub.N.Cmp(priv.PublicKey.N) != 0 {
+		t.Fatalf("imported key modulus mismatch: token key is not the key that was imported")
 	}
 }
 
