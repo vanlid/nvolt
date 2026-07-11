@@ -1,0 +1,228 @@
+package pkcs11
+
+import (
+	"bytes"
+	"crypto/rsa"
+	"errors"
+	"fmt"
+	"math/big"
+	"runtime"
+	"unsafe"
+
+	"github.com/ebitengine/purego"
+)
+
+// ErrMechanismUnsupported reports that the token refused the requested
+// mechanism or its parameters (e.g. C_DecryptInit returning
+// CKR_MECHANISM_INVALID or CKR_ARGUMENTS_BAD). Callers wrap-test with
+// errors.Is to fall back to a software-padding path (Task 3). Notably,
+// SoftHSM 2.6.1 supports RSA-OAEP only with SHA-1 and returns
+// CKR_ARGUMENTS_BAD for SHA-256 params.
+var ErrMechanismUnsupported = errors.New("pkcs11: mechanism or parameters not supported by token")
+
+// Session is an open PKCS#11 session against a single token.
+type Session struct {
+	m      *Module
+	handle uintptr
+}
+
+// Object is a PKCS#11 object handle.
+type Object = uintptr
+
+// OpenSession initializes the module (once), finds the slot whose token label
+// matches tokenLabel, and opens a serial session on it.
+func (m *Module) OpenSession(tokenLabel string) (*Session, error) {
+	if err := m.initialize(); err != nil {
+		return nil, err
+	}
+	slot, err := m.findSlot(tokenLabel)
+	if err != nil {
+		return nil, err
+	}
+	var handle uintptr
+	rv, _, _ := purego.SyscallN(m.fn(idxOpenSession), slot, CKF_SERIAL_SESSION,
+		0, 0, uintptr(unsafe.Pointer(&handle)))
+	if CKRV(rv) != CKR_OK {
+		return nil, fmt.Errorf("C_OpenSession: %s", CKRV(rv))
+	}
+	return &Session{m: m, handle: handle}, nil
+}
+
+// findSlot returns the slot id of the token whose label matches tokenLabel.
+func (m *Module) findSlot(tokenLabel string) (uintptr, error) {
+	var count uintptr
+	// tokenPresent = CK_TRUE (1)
+	rv, _, _ := purego.SyscallN(m.fn(idxGetSlotList), 1, 0, uintptr(unsafe.Pointer(&count)))
+	if CKRV(rv) != CKR_OK {
+		return 0, fmt.Errorf("C_GetSlotList(count): %s", CKRV(rv))
+	}
+	if count == 0 {
+		return 0, fmt.Errorf("no token-present slots")
+	}
+	slots := make([]uintptr, count)
+	rv, _, _ = purego.SyscallN(m.fn(idxGetSlotList), 1,
+		uintptr(unsafe.Pointer(&slots[0])), uintptr(unsafe.Pointer(&count)))
+	if CKRV(rv) != CKR_OK {
+		return 0, fmt.Errorf("C_GetSlotList: %s", CKRV(rv))
+	}
+
+	want := []byte(tokenLabel)
+	for _, slot := range slots[:count] {
+		// CK_TOKEN_INFO begins with label[32] (space-padded, not NUL-terminated).
+		var info [256]byte
+		rv, _, _ = purego.SyscallN(m.fn(idxGetTokenInfo), slot, uintptr(unsafe.Pointer(&info[0])))
+		if CKRV(rv) != CKR_OK {
+			continue
+		}
+		label := bytes.TrimRight(info[:32], " ")
+		if bytes.Equal(label, want) {
+			return slot, nil
+		}
+	}
+	return 0, fmt.Errorf("no token with label %q", tokenLabel)
+}
+
+// Login authenticates as the normal (user) role with the given PIN.
+func (s *Session) Login(pin string) error {
+	pinB := []byte(pin)
+	rv, _, _ := purego.SyscallN(s.m.fn(idxLogin), s.handle, CKU_USER,
+		uintptr(unsafe.Pointer(&pinB[0])), uintptr(len(pinB)))
+	runtime.KeepAlive(pinB)
+	if CKRV(rv) != CKR_OK {
+		return fmt.Errorf("C_Login: %s", CKRV(rv))
+	}
+	return nil
+}
+
+// Close closes the session.
+func (s *Session) Close() error {
+	if s.handle == 0 {
+		return nil
+	}
+	rv, _, _ := purego.SyscallN(s.m.fn(idxCloseSession), s.handle)
+	s.handle = 0
+	if CKRV(rv) != CKR_OK {
+		return fmt.Errorf("C_CloseSession: %s", CKRV(rv))
+	}
+	return nil
+}
+
+// FindRSAPrivateKey returns the first RSA private key object matching id.
+// A nil/empty id matches any RSA private key.
+func (s *Session) FindRSAPrivateKey(id []byte) (Object, error) {
+	class := CKO_PRIVATE_KEY
+	keyType := CKK_RSA
+	attrs := []CK_ATTRIBUTE{
+		{Type: CKA_CLASS, Value: unsafe.Pointer(&class), Len: unsafe.Sizeof(class)},
+		{Type: CKA_KEY_TYPE, Value: unsafe.Pointer(&keyType), Len: unsafe.Sizeof(keyType)},
+	}
+	if len(id) > 0 {
+		attrs = append(attrs, CK_ATTRIBUTE{Type: CKA_ID, Value: unsafe.Pointer(&id[0]), Len: uintptr(len(id))})
+	}
+
+	rv, _, _ := purego.SyscallN(s.m.fn(idxFindObjectsInit), s.handle,
+		uintptr(unsafe.Pointer(&attrs[0])), uintptr(len(attrs)))
+	runtime.KeepAlive(attrs)
+	runtime.KeepAlive(id)
+	if CKRV(rv) != CKR_OK {
+		return 0, fmt.Errorf("C_FindObjectsInit: %s", CKRV(rv))
+	}
+
+	var obj uintptr
+	var found uintptr
+	rv, _, _ = purego.SyscallN(s.m.fn(idxFindObjects), s.handle,
+		uintptr(unsafe.Pointer(&obj)), 1, uintptr(unsafe.Pointer(&found)))
+	findErr := CKRV(rv)
+
+	rvF, _, _ := purego.SyscallN(s.m.fn(idxFindObjectsFinal), s.handle)
+	if findErr != CKR_OK {
+		return 0, fmt.Errorf("C_FindObjects: %s", findErr)
+	}
+	if CKRV(rvF) != CKR_OK {
+		return 0, fmt.Errorf("C_FindObjectsFinal: %s", CKRV(rvF))
+	}
+	if found == 0 {
+		return 0, fmt.Errorf("no RSA private key found for id %x", id)
+	}
+	return obj, nil
+}
+
+// RSAPublicKey reads CKA_MODULUS and CKA_PUBLIC_EXPONENT from an RSA key
+// object and reconstructs the public key.
+func (s *Session) RSAPublicKey(obj Object) (*rsa.PublicKey, error) {
+	mod, err := s.getAttribute(obj, CKA_MODULUS)
+	if err != nil {
+		return nil, err
+	}
+	exp, err := s.getAttribute(obj, CKA_PUBLIC_EXPONENT)
+	if err != nil {
+		return nil, err
+	}
+	return &rsa.PublicKey{
+		N: new(big.Int).SetBytes(mod),
+		E: int(new(big.Int).SetBytes(exp).Int64()),
+	}, nil
+}
+
+// getAttribute fetches one attribute value using the two-call length pattern.
+func (s *Session) getAttribute(obj Object, attrType uintptr) ([]byte, error) {
+	tmpl := []CK_ATTRIBUTE{{Type: attrType, Value: nil, Len: 0}}
+	rv, _, _ := purego.SyscallN(s.m.fn(idxGetAttributeValue), s.handle, obj,
+		uintptr(unsafe.Pointer(&tmpl[0])), 1)
+	if CKRV(rv) != CKR_OK {
+		return nil, fmt.Errorf("C_GetAttributeValue(size 0x%x): %s", attrType, CKRV(rv))
+	}
+	if tmpl[0].Len == 0 {
+		return nil, nil
+	}
+	buf := make([]byte, tmpl[0].Len)
+	tmpl[0].Value = unsafe.Pointer(&buf[0])
+	rv, _, _ = purego.SyscallN(s.m.fn(idxGetAttributeValue), s.handle, obj,
+		uintptr(unsafe.Pointer(&tmpl[0])), 1)
+	runtime.KeepAlive(buf)
+	if CKRV(rv) != CKR_OK {
+		return nil, fmt.Errorf("C_GetAttributeValue(0x%x): %s", attrType, CKRV(rv))
+	}
+	return buf[:tmpl[0].Len], nil
+}
+
+// DecryptOAEPSHA256 performs CKM_RSA_PKCS_OAEP (SHA-256, MGF1-SHA256) on the token.
+func (s *Session) DecryptOAEPSHA256(priv Object, ct []byte) ([]byte, error) {
+	params := ckOAEPParams{HashAlg: CKM_SHA256, Mgf: CKG_MGF1_SHA256, SourceType: CKZ_DATA_SPECIFIED}
+	mech := CK_MECHANISM{
+		Mechanism: CKM_RSA_PKCS_OAEP,
+		Param:     unsafe.Pointer(&params),
+		ParamLen:  unsafe.Sizeof(params),
+	}
+	rv, _, _ := purego.SyscallN(s.m.fn(idxDecryptInit), s.handle,
+		uintptr(unsafe.Pointer(&mech)), priv)
+	runtime.KeepAlive(&params)
+	runtime.KeepAlive(&mech)
+	if code := CKRV(rv); code != CKR_OK {
+		if code == CKR_MECHANISM_INVALID || code == CKR_ARGUMENTS_BAD {
+			return nil, fmt.Errorf("C_DecryptInit(OAEP): %s: %w", code, ErrMechanismUnsupported)
+		}
+		return nil, fmt.Errorf("C_DecryptInit(OAEP): %s", code)
+	}
+	return s.doDecrypt(ct)
+}
+
+// doDecrypt runs the two-call C_Decrypt length pattern.
+func (s *Session) doDecrypt(ct []byte) ([]byte, error) {
+	var outLen uintptr
+	rv, _, _ := purego.SyscallN(s.m.fn(idxDecrypt), s.handle,
+		uintptr(unsafe.Pointer(&ct[0])), uintptr(len(ct)), 0, uintptr(unsafe.Pointer(&outLen)))
+	if CKRV(rv) != CKR_OK {
+		return nil, fmt.Errorf("C_Decrypt(size): %s", CKRV(rv))
+	}
+	out := make([]byte, outLen)
+	rv, _, _ = purego.SyscallN(s.m.fn(idxDecrypt), s.handle,
+		uintptr(unsafe.Pointer(&ct[0])), uintptr(len(ct)),
+		uintptr(unsafe.Pointer(&out[0])), uintptr(unsafe.Pointer(&outLen)))
+	runtime.KeepAlive(ct)
+	runtime.KeepAlive(out)
+	if CKRV(rv) != CKR_OK {
+		return nil, fmt.Errorf("C_Decrypt: %s", CKRV(rv))
+	}
+	return out[:outLen], nil
+}

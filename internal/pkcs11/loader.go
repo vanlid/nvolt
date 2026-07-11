@@ -4,6 +4,7 @@ package pkcs11
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/ebitengine/purego"
 )
@@ -12,6 +13,25 @@ import (
 type Module struct {
 	handle uintptr // dlopen handle
 	fnList uintptr // CK_FUNCTION_LIST_PTR
+
+	initOnce    sync.Once
+	initErr     error
+	initialized bool
+}
+
+// initialize calls C_Initialize exactly once per module. Cryptoki forbids a
+// second C_Initialize without an intervening C_Finalize, so all session setup
+// funnels through here.
+func (m *Module) initialize() error {
+	m.initOnce.Do(func() {
+		rv, _, _ := purego.SyscallN(m.fn(idxInitialize), 0)
+		if CKRV(rv) != CKR_OK {
+			m.initErr = fmt.Errorf("C_Initialize: %s", CKRV(rv))
+			return
+		}
+		m.initialized = true
+	})
+	return m.initErr
 }
 
 // Open dlopens the module and resolves its function list via C_GetFunctionList.
@@ -35,10 +55,14 @@ func Open(path string) (*Module, error) {
 	return &Module{handle: handle, fnList: fnList}, nil
 }
 
-// Close releases the module handle.
+// Close finalizes the library (if initialized) and releases the module handle.
 func (m *Module) Close() error {
 	if m.handle == 0 {
 		return nil
+	}
+	if m.initialized {
+		// Best-effort C_Finalize; ignore its return so Dlclose always runs.
+		_, _, _ = purego.SyscallN(m.fn(idxFinalize), 0)
 	}
 	err := purego.Dlclose(m.handle)
 	m.handle, m.fnList = 0, 0
