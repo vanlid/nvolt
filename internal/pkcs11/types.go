@@ -60,6 +60,13 @@ const (
 	CKA_MODULUS         uintptr = 0x00000120
 	CKA_MODULUS_BITS    uintptr = 0x00000121
 	CKA_PUBLIC_EXPONENT uintptr = 0x00000122
+
+	CKA_PRIVATE_EXPONENT uintptr = 0x00000123
+	CKA_PRIME_1          uintptr = 0x00000124
+	CKA_PRIME_2          uintptr = 0x00000125
+	CKA_EXPONENT_1       uintptr = 0x00000126
+	CKA_EXPONENT_2       uintptr = 0x00000127
+	CKA_COEFFICIENT      uintptr = 0x00000128
 )
 
 // CK_ATTRIBUTE mirrors the Cryptoki attribute template entry.

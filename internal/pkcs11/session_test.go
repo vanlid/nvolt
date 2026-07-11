@@ -14,6 +14,60 @@ import (
 	"github.com/iluxav/nvolt/internal/crypto"
 )
 
+// TestImportRSAPrivateKeyRoundTrip proves ImportRSAPrivateKey (C_CreateObject)
+// end to end: a freshly generated 2048-bit RSA key is imported onto the
+// SoftHSM fixture token, then FindRSAPrivateKey must locate it by its CKA_ID
+// and DecryptOAEPSHA256 must recover an OAEP-SHA256 ciphertext produced
+// against its public half. This proves both the marshaling (all seven RSA CRT
+// components sent to C_CreateObject) and that the resulting object is usable
+// for CKM_RSA_PKCS_OAEP.
+func TestImportRSAPrivateKeyRoundTrip(t *testing.T) {
+	m, err := Open(testModulePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	// Creating a token object (CKA_TOKEN=true) requires a read-write session,
+	// same as GenerateRSAKeyPair.
+	sess, err := m.OpenSessionRW("nvolt-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	if err := sess.Login("1234"); err != nil {
+		t.Fatal(err)
+	}
+
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := []byte{0x09}
+	if _, err := sess.ImportRSAPrivateKey("imported", id, priv); err != nil {
+		t.Fatalf("ImportRSAPrivateKey: %v", err)
+	}
+
+	obj, err := sess.FindRSAPrivateKey(id)
+	if err != nil {
+		t.Fatalf("find imported key: %v", err)
+	}
+
+	ct, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, &priv.PublicKey, []byte("hi"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pt, err := sess.DecryptOAEPSHA256(obj, ct)
+	if errors.Is(err, ErrMechanismUnsupported) {
+		t.Skipf("token has no native OAEP-SHA256: %v", err)
+	}
+	if err != nil {
+		t.Fatalf("decrypt with imported key: %v", err)
+	}
+	if string(pt) != "hi" {
+		t.Fatalf("got %q", pt)
+	}
+}
+
 // TestGenerateRSAKeyPair proves on-card RSA keypair generation via
 // C_GenerateKeyPair end to end: it generates a fresh 2048-bit key (id 0x03,
 // distinct from the setup script's id 01/02 keys), then FindRSAPrivateKey must

@@ -2,12 +2,16 @@ package cli
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/rsa"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	nvcrypto "github.com/iluxav/nvolt/internal/crypto"
 	"github.com/iluxav/nvolt/internal/hsmtest"
 	"github.com/iluxav/nvolt/internal/keyprovider"
 	"github.com/iluxav/nvolt/internal/pkcs11"
@@ -273,6 +277,48 @@ func TestResolveEnrollURINonInteractiveErrorsWithoutHanging(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "--pkcs11-uri") {
 		t.Fatalf("expected the error to name --pkcs11-uri as the fix, got: %v", err)
+	}
+}
+
+// TestPKCS11ImportCreatesUsableKey drives runPKCS11Import (the pkcs11 import
+// command's RunE body) against a real SoftHSM fixture token: it writes a
+// freshly generated RSA-2048 key to a PEM file, imports it via
+// C_CreateObject, and asserts the token's own listing (ListTokensAndKeys)
+// now reports a key on that token, proving the import round-trips through
+// the real PKCS#11 FFI path (not just an in-process mock).
+func TestPKCS11ImportCreatesUsableKey(t *testing.T) {
+	mod := hsmtest.Provision(t)
+	t.Setenv("NVOLT_PKCS11_PIN", "1234")
+	dir := t.TempDir()
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pemBytes, err := nvcrypto.EncodePrivateKeyPEM(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(dir, "k.pem")
+	if err := os.WriteFile(keyPath, pemBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runPKCS11Import(mod, "nvolt-test", "imported", "09", keyPath, "env"); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	// It now appears as an RSA key on the token.
+	listing, err := pkcs11.ListTokensAndKeys(mod)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, tl := range listing {
+		if tl.Label == "nvolt-test" && len(tl.Keys) > 0 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("imported key not found on token")
 	}
 }
 

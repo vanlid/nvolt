@@ -69,7 +69,7 @@ var windowsModuleCandidates = []string{
 // DefaultModulePath returns the path of the first PKCS#11 module discovered by
 // DetectModules (a p11-kit proxy on Unix, or a registry/common-path provider),
 // falling back to an error that lists every common location probed when nothing
-// is found, so callers know to pass --module explicitly.
+// is found, so callers know to pass --pkcs11-module explicitly.
 func DefaultModulePath() (string, error) {
 	if mods := DetectModules(); len(mods) > 0 {
 		return mods[0].Path, nil
@@ -100,7 +100,7 @@ func defaultModulePathFrom(candidates []string) (string, error) {
 			return path, nil
 		}
 	}
-	return "", fmt.Errorf("no PKCS#11 module found; looked in: %s (pass --module or set NVOLT_PKCS11_MODULE)", strings.Join(candidates, ", "))
+	return "", fmt.Errorf("no PKCS#11 module found; looked in: %s (pass --pkcs11-module or set NVOLT_PKCS11_MODULE)", strings.Join(candidates, ", "))
 }
 
 // ResolveModulePath resolves the PKCS#11 module path to use, in order of

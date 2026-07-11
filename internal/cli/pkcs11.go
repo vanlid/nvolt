@@ -30,6 +30,13 @@ var pkcs11GenID string
 var pkcs11GenBits int
 var pkcs11GenPinMode string
 
+var pkcs11ImportModule string
+var pkcs11ImportToken string
+var pkcs11ImportLabel string
+var pkcs11ImportID string
+var pkcs11ImportFile string
+var pkcs11ImportPinMode string
+
 var pkcs11Cmd = &cobra.Command{
 	Use:   "pkcs11",
 	Short: "Interact with PKCS#11 hardware tokens (YubiKey, SoftHSM, etc.)",
@@ -571,6 +578,80 @@ func runPKCS11Generate(module, token, label, idHex string, bits int, pinMode str
 	return nil
 }
 
+var pkcs11ImportCmd = &cobra.Command{
+	Use:   "import",
+	Short: "Import an RSA private key onto a token (PKCS#11 C_CreateObject)",
+	Long: `Import an existing RSA private key (PEM) onto a PKCS#11 token via
+C_CreateObject. Not every token supports this (e.g. a YubiKey via OpenSC
+refuses PKCS#11 key import; use the device's own tool instead).
+
+Example:
+  nvolt pkcs11 import --pkcs11-module /usr/lib/softhsm/libsofthsm2.so \
+    --token nvolt-test --label my-key --id 03 --privkey key.pem`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		module, err := pkcs11.ResolveModulePath(pkcs11ImportModule)
+		if err != nil {
+			return err
+		}
+		return runPKCS11Import(module, pkcs11ImportToken, pkcs11ImportLabel, pkcs11ImportID, pkcs11ImportFile, pkcs11ImportPinMode)
+	},
+}
+
+// runPKCS11Import opens a session on the named token, logs in, and imports an
+// RSA private key read from keyFile via C_CreateObject.
+func runPKCS11Import(module, token, label, idHex, keyFile, pinMode string) error {
+	if token == "" || keyFile == "" {
+		return fmt.Errorf("--token and --privkey are required")
+	}
+	pemData, err := os.ReadFile(keyFile)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", keyFile, err)
+	}
+	priv, err := nvcrypto.DecodePrivateKeyPEM(pemData)
+	if err != nil {
+		return fmt.Errorf("parse private key: %w", err)
+	}
+	if priv.N.BitLen() < 2048 {
+		return fmt.Errorf("RSA key is %d bits; minimum 2048 required", priv.N.BitLen())
+	}
+	id, err := hex.DecodeString(idHex)
+	if err != nil {
+		return fmt.Errorf("invalid --id hex %q: %w", idHex, err)
+	}
+
+	m, err := pkcs11.Open(module)
+	if err != nil {
+		return fmt.Errorf("failed to open PKCS#11 module: %w", err)
+	}
+	defer m.Close()
+
+	sess, err := m.OpenSessionRW(token)
+	if err != nil {
+		return fmt.Errorf("failed to open session on token %q: %w", token, err)
+	}
+	defer sess.Close()
+
+	pin, err := pinentry.Read(pinMode)
+	if err != nil {
+		return fmt.Errorf("failed to obtain PIN: %w", err)
+	}
+	if pin != "" {
+		if err := sess.Login(pin); err != nil {
+			return fmt.Errorf("failed to log in: %w", err)
+		}
+	}
+
+	if _, err := sess.ImportRSAPrivateKey(label, id, priv); err != nil {
+		return err
+	}
+	// ui.PrintKeyValue -> ui.Info double-formats (see runPKCS11Generate above):
+	// escape "%" -> "%%" on user-controlled strings before display.
+	ui.Success("Imported RSA key onto token %s", strings.ReplaceAll(token, "%", "%%"))
+	ui.Verbose("  Label: %s", strings.ReplaceAll(label, "%", "%%"))
+	ui.Verbose("  ID: %x", id)
+	return nil
+}
+
 func init() {
 	pkcs11Cmd.AddCommand(pkcs11ListCmd)
 	pkcs11ListCmd.Flags().StringVar(&pkcs11Module, "pkcs11-module", "", "Path to PKCS#11 module (.so); autodetected if omitted")
@@ -590,6 +671,18 @@ func init() {
 	_ = pkcs11GenerateCmd.MarkFlagRequired("token")
 	_ = pkcs11GenerateCmd.MarkFlagRequired("label")
 	_ = pkcs11GenerateCmd.MarkFlagRequired("id")
+
+	pkcs11Cmd.AddCommand(pkcs11ImportCmd)
+	pkcs11ImportCmd.Flags().StringVar(&pkcs11ImportModule, "pkcs11-module", "", "Path to PKCS#11 module (.so); autodetected if omitted")
+	pkcs11ImportCmd.Flags().StringVar(&pkcs11ImportToken, "token", "", "Token label to import the key onto (required)")
+	pkcs11ImportCmd.Flags().StringVar(&pkcs11ImportLabel, "label", "", "CKA_LABEL for the imported key (required)")
+	pkcs11ImportCmd.Flags().StringVar(&pkcs11ImportID, "id", "", "CKA_ID for the imported key, hex (e.g. 03) (required)")
+	pkcs11ImportCmd.Flags().StringVar(&pkcs11ImportFile, "privkey", "", "Path to the RSA private key PEM to import (required)")
+	pkcs11ImportCmd.Flags().StringVar(&pkcs11ImportPinMode, "pkcs11-pin-mode", "prompt", "How to obtain the PIN: prompt, env, or none")
+	_ = pkcs11ImportCmd.MarkFlagRequired("token")
+	_ = pkcs11ImportCmd.MarkFlagRequired("label")
+	_ = pkcs11ImportCmd.MarkFlagRequired("id")
+	_ = pkcs11ImportCmd.MarkFlagRequired("privkey")
 
 	rootCmd.AddCommand(pkcs11Cmd)
 }

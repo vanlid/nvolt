@@ -22,6 +22,7 @@ const (
 	idxCloseSession      = 13 // C_CloseSession
 	idxLogin             = 18 // C_Login
 	idxLogout            = 19 // C_Logout
+	idxCreateObject      = 20 // C_CreateObject
 	idxGetAttributeValue = 24 // C_GetAttributeValue
 	idxFindObjectsInit   = 26 // C_FindObjectsInit
 	idxFindObjects       = 27 // C_FindObjects

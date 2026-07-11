@@ -355,6 +355,52 @@ func (s *Session) GenerateRSAKeyPair(label string, id []byte, bits int) (Object,
 	return privHandle.get(), nil
 }
 
+// ImportRSAPrivateKey creates a token (persistent) RSA private key object from
+// priv via C_CreateObject. The key is marked CKA_DECRYPT so nvolt can unwrap
+// with it. Returns the created object handle. Tokens that forbid PKCS#11 key
+// import (e.g. YubiKey via OpenSC) return the token's error unchanged.
+func (s *Session) ImportRSAPrivateKey(label string, id []byte, priv *rsa.PrivateKey) (Object, error) {
+	priv.Precompute()
+	bytesOf := func(i *big.Int) []byte { return i.Bytes() }
+	eBytes := big.NewInt(int64(priv.E)).Bytes()
+
+	boolAttr := func(t uintptr) attr { return attr{typ: t, val: []byte{0x01}} }
+	attrs := []attr{
+		{typ: CKA_CLASS, val: encodeCKULong(CKO_PRIVATE_KEY)},
+		{typ: CKA_KEY_TYPE, val: encodeCKULong(CKK_RSA)},
+		boolAttr(CKA_TOKEN),
+		boolAttr(CKA_PRIVATE),
+		boolAttr(CKA_DECRYPT),
+		{typ: CKA_LABEL, val: []byte(label)},
+		{typ: CKA_MODULUS, val: bytesOf(priv.N)},
+		{typ: CKA_PUBLIC_EXPONENT, val: eBytes},
+		{typ: CKA_PRIVATE_EXPONENT, val: bytesOf(priv.D)},
+		{typ: CKA_PRIME_1, val: bytesOf(priv.Primes[0])},
+		{typ: CKA_PRIME_2, val: bytesOf(priv.Primes[1])},
+		{typ: CKA_EXPONENT_1, val: bytesOf(priv.Precomputed.Dp)},
+		{typ: CKA_EXPONENT_2, val: bytesOf(priv.Precomputed.Dq)},
+		{typ: CKA_COEFFICIENT, val: bytesOf(priv.Precomputed.Qinv)},
+	}
+	if len(id) > 0 {
+		attrs = append(attrs, attr{typ: CKA_ID, val: id})
+	}
+	tmpl := packTemplate(attrs)
+	objHandle := newCKULongOut()
+	rv, _, _ := purego.SyscallN(s.m.fn(idxCreateObject), s.handle,
+		uintptr(tmpl.ptr()), tmpl.count(), uintptr(objHandle.ptr()))
+	runtime.KeepAlive(tmpl)
+	runtime.KeepAlive(objHandle)
+	if code := rvOf(rv); code != CKR_OK {
+		if code == CKR_FUNCTION_NOT_SUPPORTED {
+			return 0, fmt.Errorf("C_CreateObject: %s: this token does not support PKCS#11 "+
+				"key import; import the key with the device's own tool instead, e.g.:\n"+
+				"  ykman piv keys import 9d key.pem", code)
+		}
+		return 0, fmt.Errorf("C_CreateObject: %s", code)
+	}
+	return objHandle.get(), nil
+}
+
 // DecryptOAEPSHA256 performs CKM_RSA_PKCS_OAEP (SHA-256, MGF1-SHA256) on the token.
 func (s *Session) DecryptOAEPSHA256(priv Object, ct []byte) ([]byte, error) {
 	mech := packMechanismOAEP(CKM_RSA_PKCS_OAEP, CKM_SHA256, CKG_MGF1_SHA256, CKZ_DATA_SPECIFIED)
