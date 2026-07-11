@@ -233,7 +233,7 @@ func runPKCS11Generate(module, token, label, idHex string, bits int, pinMode str
 	}
 	defer m.Close()
 
-	sess, err := m.OpenSession(token)
+	sess, err := m.OpenSessionRW(token)
 	if err != nil {
 		return fmt.Errorf("failed to open session on token %q: %w", token, err)
 	}
@@ -251,10 +251,15 @@ func runPKCS11Generate(module, token, label, idHex string, bits int, pinMode str
 		return fmt.Errorf("failed to generate RSA keypair: %w", err)
 	}
 
+	// ui.PrintKeyValue -> ui.Info double-formats (see runPKCS11Use above): any
+	// "%" in user-supplied token/label gets reinterpreted as a format verb on
+	// the second pass. Escape "%" -> "%%" on the user-controlled strings
+	// before display; the hex id is already %-safe but escaping it too is
+	// harmless. Numeric bits need no escaping.
 	ui.Section("On-card RSA keypair generated")
-	ui.PrintKeyValue("  Token", ui.Cyan(token))
-	ui.PrintKeyValue("  Label", label)
-	ui.PrintKeyValue("  ID", fmt.Sprintf("%x", id))
+	ui.PrintKeyValue("  Token", ui.Cyan(strings.ReplaceAll(token, "%", "%%")))
+	ui.PrintKeyValue("  Label", strings.ReplaceAll(label, "%", "%%"))
+	ui.PrintKeyValue("  ID", strings.ReplaceAll(fmt.Sprintf("%x", id), "%", "%%"))
 	ui.PrintKeyValue("  Bits", fmt.Sprintf("%d", bits))
 	ui.Success("RSA-%d keypair created on-card (private key non-exportable)", bits)
 

@@ -25,7 +25,10 @@ func TestGenerateRSAKeyPair(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer m.Close()
-	sess, err := m.OpenSession("nvolt-test")
+	// Key generation creates token objects (CKA_TOKEN=true), which requires a
+	// read-write session; OpenSessionRW is the RW counterpart to the
+	// read-only OpenSession used by every other (read-only) caller.
+	sess, err := m.OpenSessionRW("nvolt-test")
 	if err != nil {
 		t.Fatal(err)
 	}

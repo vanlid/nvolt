@@ -30,8 +30,27 @@ type Session struct {
 type Object = uintptr
 
 // OpenSession initializes the module (once), finds the slot whose token label
-// matches tokenLabel, and opens a serial session on it.
+// matches tokenLabel, and opens a read-only serial session on it. Most
+// callers (decrypt, enroll, list/use, discovery) only ever read objects and
+// must not request CKF_RW_SESSION: a read-only or write-protected token
+// returns CKR_TOKEN_WRITE_PROTECTED for a RW C_OpenSession, which would
+// otherwise break the core decrypt path. Use OpenSessionRW for the one
+// caller that creates token objects (key generation).
 func (m *Module) OpenSession(tokenLabel string) (*Session, error) {
+	return m.openSession(tokenLabel, false)
+}
+
+// OpenSessionRW opens a read-write serial session (CKF_RW_SESSION), required
+// to create token objects (CKA_TOKEN=true) in GenerateRSAKeyPair. Only the
+// key-generation path should use this; every other caller should use the
+// read-only OpenSession.
+func (m *Module) OpenSessionRW(tokenLabel string) (*Session, error) {
+	return m.openSession(tokenLabel, true)
+}
+
+// openSession finds the slot whose token label matches tokenLabel and opens
+// a serial session on it, read-write only when rw is true.
+func (m *Module) openSession(tokenLabel string, rw bool) (*Session, error) {
 	if err := m.initialize(); err != nil {
 		return nil, err
 	}
@@ -39,12 +58,12 @@ func (m *Module) OpenSession(tokenLabel string) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
+	flags := uintptr(CKF_SERIAL_SESSION)
+	if rw {
+		flags |= CKF_RW_SESSION
+	}
 	var handle uintptr
-	// Open read-write (CKF_RW_SESSION): a RW session is a strict superset of a
-	// read-only one for the decrypt/login callers, and it is required to create
-	// token objects in GenerateRSAKeyPair (CKA_TOKEN=true). The no-login
-	// discovery path in discover.go stays read-only.
-	rv, _, _ := purego.SyscallN(m.fn(idxOpenSession), slot, CKF_SERIAL_SESSION|CKF_RW_SESSION,
+	rv, _, _ := purego.SyscallN(m.fn(idxOpenSession), slot, flags,
 		0, 0, uintptr(unsafe.Pointer(&handle)))
 	if CKRV(rv) != CKR_OK {
 		return nil, fmt.Errorf("C_OpenSession: %s", CKRV(rv))
