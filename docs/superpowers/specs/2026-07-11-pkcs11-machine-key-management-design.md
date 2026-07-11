@@ -104,12 +104,15 @@ where the pubkey comes from and what is *not* printed):
 
 A new **top-level** command (alongside `init`/`join`, the other current-machine
 identity commands — *not* under `machine`, whose subcommands act on the vault
-registry, and *not* under `pkcs11`, since it also handles `--privkey`).
+registry, and *not* under `pkcs11`, since it also has a `--software` direction).
 
 ```
 nvolt rebind --pkcs11 [--pkcs11-module <p>] [--pkcs11-uri <u>] [--pkcs11-pin-mode <m>]   # -> hardware
-nvolt rebind --privkey <private.pem>                                                         # -> software
+nvolt rebind --software [--privkey <private.pem>]                                        # -> software
 ```
+
+Exactly one direction (`--pkcs11` or `--software`) is required — there is no
+ambiguous no-arg form.
 
 **Purpose:** move *this* machine's identity between software and hardware backing
 **without changing the key** — the new backing's public key **must equal** the
@@ -117,31 +120,46 @@ current identity's. Because the pubkey (and thus the fingerprint and id) is
 unchanged, **every wrapped key stays valid and no vault is touched.** Real use
 case: get your existing software key onto the card first — `nvolt pkcs11 import` on
 tokens that support PKCS#11 import, or `ykman piv keys import` on a YubiKey — then
-`nvolt rebind --pkcs11 …` so nvolt unwraps via the card. `rebind` does not import
-the key; if the token holds no key matching your identity it errors and (for
-`--pkcs11`) prints the `pkcs11 import`/`ykman` command to run.
+`nvolt rebind --pkcs11 …` so nvolt unwraps via the card.
+
+**Non-destructive by design:** `rebind` only re-points config and *installs* a key
+into the forced location when one is missing. It **never deletes or overwrites** a
+key file — nothing else in nvolt does, and the user stays in control.
 
 **Behavior:**
 
 1. Load the current `machine-info`. If none exists → error: "no machine identity
    yet; use `init`/`join --pkcs11`". (`rebind` changes an existing identity; it
    does not create one.)
-2. Obtain the candidate key and its public key:
-   - `--pkcs11 …`: run the existing enroll read + **self-test** (`keyprovider.Enroll`
-     — proves the card can actually decrypt; needs the PIN, hence
-     `--pkcs11-pin-mode`).
-   - `--privkey <private.pem>`: PEM-decode the private key (its usability is implicit).
-3. **Gate:** the candidate public key must equal the current identity's public key.
-   Mismatch → error: "that key's public key doesn't match this machine's identity;
-   `rebind` only relocates the same key — to change to a different key, register it
-   with `machine add` and re-grant." (Points at the rotation flow.)
-4. Swap the local backing (id, pubkey, fingerprint, and all wrapped keys unchanged):
-   - → hardware: set `key_source = {source: pkcs11, module, uri}`; secure-delete
-     `private_key.pem`.
-   - → software: write `private_key.pem` (0600); clear `key_source` (software).
-5. No vault operation, no commit/push.
+2. Establish the target backing's key and gate on the pubkey (**must equal** the
+   current identity's public key; mismatch → error: "that key's public key doesn't
+   match this machine's identity; `rebind` only relocates the same key — to change
+   to a different key, register it with `machine add` and re-grant"):
+   - **`--pkcs11 …`** (→ hardware): resolve module/token/key, run the existing
+     enroll read + **self-test** (`keyprovider.Enroll` — proves the card can
+     actually decrypt; needs the PIN, hence `--pkcs11-pin-mode`). If the token
+     holds no key matching your identity → error printing the `pkcs11
+     import`/`ykman` command to put the key on the card first.
+   - **`--software`** (→ software): the key must be a software PEM whose pubkey
+     matches.
+     - Without `--privkey`: require an existing key at `~/.nvolt/private_key.pem`
+       and verify it matches (the natural "undo" of a sw→hw rebind, which left the
+       key in place). No key present → error asking for `--privkey`.
+     - With `--privkey <path>`: verify its pubkey matches, then install it — but
+       only into an **empty** destination. If `~/.nvolt/private_key.pem` already
+       exists and **matches**, `--privkey` is redundant → flip config, write
+       nothing. If it exists and **differs**, refuse: "a different private key
+       already exists at `~/.nvolt/private_key.pem` — remove or relocate it first."
+3. Swap the local backing (id, pubkey, fingerprint, and all wrapped keys unchanged):
+   - → hardware: set `key_source = {source: pkcs11, module, uri}`. **Leave**
+     `~/.nvolt/private_key.pem` on disk and print that it is still present (and can
+     still decrypt), with the command to remove it once the card is confirmed.
+   - → software: ensure the matching key is at `~/.nvolt/private_key.pem` (per
+     above), clear `key_source` (software).
+4. No vault operation, no commit/push; no file deleted or overwritten.
 
-`--pkcs11` and `--privkey` are mutually exclusive; exactly one is required.
+`--pkcs11` and `--software` are mutually exclusive; `--privkey` is valid only with
+`--software`.
 
 ## Feature 3 — `pkcs11 import`
 
@@ -181,8 +199,16 @@ Delete the `pkcs11 use` subcommand and its flags/vars. Fresh hardware enrollment
 `init/join --pkcs11` (already wizard-enabled); same-key backing swap is `rebind`;
 a different-key change is the user-composed rotation. The shared
 `enrollPKCS11Machine`/`keyprovider.Enroll` code stays (used by init/join and, for
-the self-test + key_source, by `rebind`). The `pkcs11` group keeps `list` and
-`generate`.
+the self-test + key_source, by `rebind`). The `pkcs11` group keeps `list`,
+`generate`, and the new `import`.
+
+**Non-destructive alignment:** `enrollPKCS11Machine` today *secure-deletes* an
+orphaned software `private_key.pem`. That path is only reachable in a broken
+partial state (`IsMachineInitialized` already guards the normal case — a real
+software identity returns `SoftwareConflict`, never an enroll), but for
+consistency with `rebind` it changes to **inform, not delete**: leave the file and
+print that it is still present and how to remove it. No nvolt command deletes a
+user's key file.
 
 ## Feature 5 — `--pkcs11-*` flag rule
 
@@ -199,7 +225,8 @@ generic file inputs.** The mild stutter this leaves on shared flags under the
 | module | `pkcs11 list/generate/import`, `init`, `join`, `machine add`, `rebind` | `--pkcs11-module` (crosses general → prefixed) |
 | uri | `init`, `join`, `machine add`, `rebind` | `--pkcs11-uri` (crosses general → prefixed) |
 | pin-mode | `pkcs11 generate/import`, `init`, `join`, `rebind` | `--pkcs11-pin-mode` (crosses general → prefixed) |
-| pkcs11 (toggle) | `init`, `join`, `machine add`, `rebind` | `--pkcs11` |
+| pkcs11 (toggle / hw direction) | `init`, `join`, `machine add`, `rebind` | `--pkcs11` |
+| software (sw direction) | `rebind` | `--software` (rebind-only direction → bare) |
 | token / label / id | `pkcs11 generate`, `pkcs11 import` | `--token` / `--label` / `--id` (pkcs11-group-internal → bare) |
 | pubkey | `machine add` | `--pubkey` (public-key file → bare) |
 | privkey | `rebind`, `pkcs11 import` | `--privkey` (private-key file → bare) |
@@ -222,12 +249,14 @@ Per command — Info (default) vs Verbose:
   token label; per key `RSA-<bits>`, or "no RSA key yet" + the generate hint).
   Verbose: module `Path`/`Source`, key `ID` and full `Label`.
 - **enroll (`init/join --pkcs11`)** — Info: `Machine <id> is now backed by the
-  on-card key`. Verbose: `Fingerprint`, `Module`, `URI`, `OAEP mode`, and the
-  orphaned-software-key removal note.
+  on-card key`, plus (if a software key was left on disk) the security notice that
+  it is still present and how to remove it — this notice stays at Info, never
+  hidden. Verbose: `Fingerprint`, `Module`, `URI`, `OAEP mode`.
 - **`pkcs11 generate` / `pkcs11 import`** — Info: one-line success (what was
   created/imported on which token). Verbose: `Label`, `ID`, `Bits`.
-- **`rebind`** — Info: `<id> now backed by <hardware|software>`. Verbose:
-  fingerprint, and module/uri (hw) or key path (sw).
+- **`rebind`** — Info: `<id> now backed by <hardware|software>`, plus (sw→hw) the
+  same at-Info notice that `~/.nvolt/private_key.pem` is still present + removal
+  command. Verbose: fingerprint, and module/uri (hw) or key path (sw).
 - **`machine add` (new sources)** — Info: `Registered <id>` + grant hint. Verbose:
   fingerprint and the source (pubkey file path / token uri).
 
@@ -267,11 +296,14 @@ one-command `rebind` and needs none of this.
 - **`internal/cli/machine.go`** — `runMachineAdd` grows a source switch; extract a
   pure `machineAddPublicKey(source) (*rsa.PublicKey, error)`; move key generation +
   private-key output under the generate-only branch.
-- **`internal/cli/rebind.go`** (new) — the `rebind` command: load current identity,
-  read candidate (token via `keyprovider.Enroll` self-test, or `--privkey`), enforce
-  the pubkey-match gate, swap `key_source` + backing files. Reuses
-  `resolveEnrollTarget`, `keyprovider.Enroll`, and the secure-delete used today by
-  the removed `pkcs11 use` orphan-key cleanup.
+- **`internal/cli/rebind.go`** (new) — the `rebind` command: require exactly one of
+  `--pkcs11`/`--software`; load current identity; establish the target key (token
+  via `keyprovider.Enroll` self-test for `--pkcs11`; existing/`--privkey` PEM for
+  `--software`); enforce the pubkey-match gate; flip `key_source`. **Non-destructive**
+  — sw→hw leaves `private_key.pem` and prints the still-present notice; sw install
+  writes only to an empty destination (matching-existing → flip only; differing →
+  refuse). Reuses `resolveEnrollTarget` and `keyprovider.Enroll`; adds no
+  secure-delete.
 - **`internal/cli/pkcs11.go`** — remove the `use` subcommand; add the `import`
   subcommand; reuse/extract a `ReadTokenPublicKey(module, uri) (*rsa.PublicKey,
   error)` from the enroll path for `machine add --pkcs11`; rename the shared
@@ -297,11 +329,22 @@ the token-pubkey read are each one shared function.
 
 - Unreadable/missing `--pubkey`/`--privkey`, non-RSA, sub-2048, malformed PEM → clear
   error naming the input.
+- `rebind` with no direction (neither `--pkcs11` nor `--software`) or both → explicit
+  "specify exactly one of --pkcs11 / --software" error; `--privkey` without
+  `--software` → "—privkey is only valid with --software".
 - `rebind` with no current identity → directs to `init`/`join --pkcs11`.
 - `rebind` pubkey mismatch → the "same key only" message pointing at `machine add`.
 - `rebind --pkcs11` self-test failure (card can't decrypt / wrong PIN) → the
   existing enroll self-test error; the swap is **not** performed.
-- Mutually-exclusive sources set together → explicit "choose one" error.
+- `rebind --pkcs11` with no key on the token matching the identity → error printing
+  the `pkcs11 import`/`ykman` command to put the key on the card first.
+- `rebind --software` with no `--privkey` and no existing `~/.nvolt/private_key.pem`
+  → "no software key present; supply --privkey <path>".
+- `rebind --software --privkey <p>` when a **different** key already exists at
+  `~/.nvolt/private_key.pem` → refuse ("remove or relocate it first"); nothing is
+  overwritten.
+- Mutually-exclusive sources set together (`machine add` `--pubkey`+`--pkcs11`) →
+  explicit "choose one" error.
 - Not in a vault (`machine add`) → existing `findVaultPath` error.
 
 ## Testing
@@ -309,15 +352,20 @@ the token-pubkey read are each one shared function.
 - **Unit (no hardware):** `machineAddPublicKey` for `--pubkey` (valid RSA-2048 ok;
   sub-2048, non-RSA, malformed rejected); source mutual-exclusivity. Registered
   `MachineInfo` has pubkey + expected id, no private key, no `KeySource`.
-- **Unit:** `rebind` pubkey-match gate — matching pubkey swaps `key_source` and
-  leaves id/wrapped keys untouched; mismatched pubkey errors and changes nothing;
-  no-identity errors.
+- **Unit:** `rebind` pubkey-match gate + non-destructive rules — matching pubkey
+  flips `key_source`, leaving id/wrapped keys untouched; mismatch errors and changes
+  nothing; no-identity errors; no direction / both directions error; sw→hw **does
+  not delete** `private_key.pem` (still on disk after) and emits the notice;
+  `--software` with no `--privkey` and no on-disk key errors; `--software --privkey`
+  over a **differing** existing key refuses and leaves it intact; over a matching
+  existing key flips config without rewriting.
 - **Integration (SoftHSM, gated on `NVOLT_TEST_PKCS11_MODULE`, via `hsmtest`):**
   `pkcs11 import --privkey <pem>` creates a usable RSA private key on the token (found
   by `pkcs11 list`, and it decrypts an OAEP round-trip); `machine add --pkcs11
   --pkcs11-uri <key>` registers from the token pubkey; `rebind --pkcs11` over a
-  software identity whose key was imported to the token swaps to
-  `key_source=pkcs11` and removes `private_key.pem`.
+  software identity whose key was imported to the token swaps to `key_source=pkcs11`
+  and **leaves** `private_key.pem`; a following `rebind --software` (no `--privkey`)
+  flips back using that same on-disk key.
 - **Flag-rename:** `--help` for `init`, `join`, `pkcs11 list/generate`, `machine
   add`, `rebind` shows shared flags as `--pkcs11-*`, `generate` still bare
   `--token/--label/--id`.
@@ -333,9 +381,11 @@ the token-pubkey read are each one shared function.
 
 - `machine add --pubkey`/`--pkcs11` register a machine from an existing pubkey with
   no private key generated or printed; default `machine add` behavior is unchanged.
-- `nvolt rebind --pkcs11`/`--privkey` swaps backing for the same key (pubkey-gated),
-  changing only local `key_source` + backing files and touching no vault; a
-  different key is refused with a clear pointer to `machine add`.
+- `nvolt rebind --pkcs11` / `--software [--privkey]` swaps backing for the same key
+  (pubkey-gated), changing only local `key_source` (and installing a software key
+  into an empty slot when needed); it **never deletes or overwrites** a key file and
+  touches no vault; a different key is refused with a clear pointer to `machine add`.
+  No nvolt command deletes a user's software key — it informs instead.
 - `nvolt pkcs11 import --privkey <pem>` loads an RSA private key onto a supporting
   token via `C_CreateObject`; on a token that rejects PKCS#11 import (YubiKey) it
   surfaces the token's error, like `generate`.
