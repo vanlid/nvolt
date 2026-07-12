@@ -42,3 +42,6 @@ TASKS.md
 # build/pkcs11/build-module.sh with STATIC_ARCHIVES, consumed by cgo under the
 # wolfpkcs11_static build tag)
 internal/pkcs11/dist/static/
+
+# Claude Code worktrees / scratch (fork-local)
+.claude/
