@@ -40,10 +40,16 @@ This command will:
 
 // pkcs11EnrollOpts carries the --pkcs11 enrollment parameters for init/join.
 // A nil *pkcs11EnrollOpts means --pkcs11 was not set (default software path).
+//
+// It holds the RAW, UNRESOLVED flag values. Module/URI resolution
+// (resolveEnrollTarget, which may prompt for a module/token/key) is deferred to
+// ensurePKCS11MachineInitialized's enroll branch: re-running init/join on an
+// already-enrolled machine reuses the existing identity WITHOUT resolving —
+// otherwise the user was asked to pick a module that is never used.
 type pkcs11EnrollOpts struct {
-	module  string
-	uri     string
-	pinMode string
+	flagModule string
+	flagURI    string
+	pinMode    string
 }
 
 // addPKCS11EnrollFlags registers the shared --pkcs11/--pkcs11-module/
@@ -61,11 +67,12 @@ func addPKCS11EnrollFlags(cmd *cobra.Command) {
 }
 
 // pkcs11OptsFromFlags returns the enrollment options when --pkcs11 is set, or
-// nil when it is not (unchanged software init/join). It delegates module/URI
-// resolution to resolveEnrollTarget: explicit --pkcs11-module/--pkcs11-uri
-// (or NVOLT_PKCS11_MODULE) resolve with no prompting, and anything left
-// unspecified falls back to autodetection or, on a terminal, the interactive
-// module/token/key wizard.
+// nil when it is not (unchanged software init/join). It only CAPTURES the raw
+// flag values; it deliberately does NOT resolve the module/URI here. Resolution
+// (which can prompt for a module/token/key) is deferred to
+// ensurePKCS11MachineInitialized and runs only when a fresh enrollment is
+// actually needed — so re-running init/join on an already-enrolled machine
+// reuses the existing identity without ever prompting.
 func pkcs11OptsFromFlags(cmd *cobra.Command) (*pkcs11EnrollOpts, error) {
 	usePKCS11, _ := cmd.Flags().GetBool("pkcs11")
 	if !usePKCS11 {
@@ -74,11 +81,7 @@ func pkcs11OptsFromFlags(cmd *cobra.Command) (*pkcs11EnrollOpts, error) {
 	flagModule, _ := cmd.Flags().GetString("pkcs11-module")
 	flagURI, _ := cmd.Flags().GetString("pkcs11-uri")
 	pinMode, _ := cmd.Flags().GetString("pkcs11-pin-mode")
-	module, uri, err := resolveEnrollTarget(flagModule, flagURI)
-	if err != nil {
-		return nil, fmt.Errorf("--pkcs11 target resolution failed: %w", err)
-	}
-	return &pkcs11EnrollOpts{module: module, uri: uri, pinMode: pinMode}, nil
+	return &pkcs11EnrollOpts{flagModule: flagModule, flagURI: flagURI, pinMode: pinMode}, nil
 }
 
 func runInit(repoSpec string, pkcs11Opts *pkcs11EnrollOpts) error {

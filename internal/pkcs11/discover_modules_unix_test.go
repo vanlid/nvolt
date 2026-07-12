@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build pkcs11 && !windows
 
 package pkcs11
 

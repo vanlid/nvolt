@@ -1,4 +1,4 @@
-//go:build windows
+//go:build pkcs11 && windows
 
 package pkcs11
 
@@ -34,6 +34,7 @@ func DetectModules() []DiscoveredModule {
 		seen[key] = true
 		mods = append(mods, DiscoveredModule{
 			Path:   path,
+			Name:   friendlyModuleName(path),
 			Label:  filepath.Base(path),
 			Source: source,
 		})

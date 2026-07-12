@@ -156,7 +156,7 @@ func (s *Session) findRSAObjects(class uintptr, id []byte) ([]Object, error) {
 	if len(id) > 0 {
 		attrs = append(attrs, attr{typ: CKA_ID, val: id})
 	}
-	tmpl := packTemplate(attrs)
+	tmpl := packTemplate(attrs, s.packed())
 	rv, _, _ := purego.SyscallN(s.m.fn(idxFindObjectsInit), s.handle,
 		uintptr(tmpl.ptr()), tmpl.count())
 	runtime.KeepAlive(tmpl)
@@ -204,10 +204,23 @@ func (s *Session) rsaKeyInfo(tokenLabel string, obj Object) (KeyInfo, error) {
 	if err != nil {
 		return KeyInfo{}, err
 	}
-	return KeyInfo{
+	ki := KeyInfo{
 		TokenLabel: tokenLabel,
 		Label:      string(label),
 		ID:         id,
 		Bits:       new(big.Int).SetBytes(mod).BitLen(),
-	}, nil
+	}
+	// Fill in the public-key fingerprint from the key's public half, and
+	// recover Bits when this object's CKA_MODULUS was unreadable pre-login
+	// (e.g. a CKA_PRIVATE private-key object on wolfPKCS11, whose modulus reads
+	// empty without a PIN). RSAPublicKeyByID prefers the CKO_PUBLIC_KEY object,
+	// readable without login. Best-effort: a key whose public half can't be
+	// read keeps an empty fingerprint rather than failing discovery.
+	if pub, perr := s.RSAPublicKeyByID(id); perr == nil {
+		if ki.Bits == 0 {
+			ki.Bits = pub.N.BitLen()
+		}
+		ki.Fingerprint = pubFingerprint(pub)
+	}
+	return ki, nil
 }

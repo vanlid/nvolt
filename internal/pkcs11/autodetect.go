@@ -8,15 +8,6 @@ import (
 	"strings"
 )
 
-// DiscoveredModule describes one PKCS#11 provider library found by
-// DetectModules. Source records how it was discovered ("p11-kit", "path" or
-// "registry") so callers can label and order the results sensibly.
-type DiscoveredModule struct {
-	Path   string
-	Label  string
-	Source string
-}
-
 // cleanModuleKey returns a canonical key for a module path used to dedupe
 // DetectModules results: the resolved (symlink-followed) absolute path, so a
 // symlink (e.g. /usr/lib/x86_64-linux-gnu/opensc-pkcs11.so) and its target
@@ -66,19 +57,6 @@ var windowsModuleCandidates = []string{
 	`C:\Program Files\Yubico\YubiKey PIV Manager\ykcs11.dll`,
 }
 
-// DefaultModulePath returns the path of the first PKCS#11 module discovered by
-// DetectModules (a p11-kit proxy on Unix, or a registry/common-path provider),
-// falling back to an error that lists every common location probed when nothing
-// is found, so callers know to pass --pkcs11-module explicitly.
-func DefaultModulePath() (string, error) {
-	if mods := DetectModules(); len(mods) > 0 {
-		return mods[0].Path, nil
-	}
-	// Nothing discovered: reuse the per-OS candidate list to produce a
-	// deterministic "not found" error naming where we looked.
-	return defaultModulePathFrom(candidatesForOS())
-}
-
 // candidatesForOS returns the module search list for the current GOOS.
 func candidatesForOS() []string {
 	switch runtime.GOOS {
@@ -101,21 +79,4 @@ func defaultModulePathFrom(candidates []string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("no PKCS#11 module found; looked in: %s (pass --pkcs11-module or set NVOLT_PKCS11_MODULE)", strings.Join(candidates, ", "))
-}
-
-// ResolveModulePath resolves the PKCS#11 module path to use, in order of
-// precedence: an explicit --module flag value, then the NVOLT_PKCS11_MODULE
-// environment variable, then autodetection of common install locations.
-func ResolveModulePath(flagValue string) (string, error) {
-	if flagValue != "" {
-		return flagValue, nil
-	}
-	if env := os.Getenv("NVOLT_PKCS11_MODULE"); env != "" {
-		return env, nil
-	}
-	path, err := DefaultModulePath()
-	if err != nil {
-		return "", fmt.Errorf("failed to resolve PKCS#11 module: %w", err)
-	}
-	return path, nil
 }

@@ -1,4 +1,4 @@
-//go:build pkcs11
+//go:build pkcs11 || tpm_static
 
 package cli
 
@@ -65,7 +65,7 @@ func TestPKCS11ListShowsKeys(t *testing.T) {
 // (which made a real card indistinguishable from "no card detected").
 func TestPrintTokenListingShowsEmptyTokenWithGenerateHint(t *testing.T) {
 	out, err := captureStdout(func() error {
-		printTokenListing(pkcs11.TokenListing{Label: "PIV_II"})
+		printTokenListing(pkcs11.TokenListing{Label: "PIV_II"}, "embedded")
 		return nil
 	})
 	if err != nil {
@@ -77,7 +77,7 @@ func TestPrintTokenListingShowsEmptyTokenWithGenerateHint(t *testing.T) {
 	if !strings.Contains(out, "No RSA key yet") {
 		t.Fatalf("expected a 'no RSA key yet' hint in output:\n%s", out)
 	}
-	if !strings.Contains(out, "nvolt pkcs11 generate --token PIV_II") {
+	if !strings.Contains(out, "nvolt pkcs11 generate --pkcs11-module embedded --token PIV_II") {
 		t.Fatalf("expected the generate command naming the token in output:\n%s", out)
 	}
 }
@@ -97,7 +97,7 @@ func TestPrintTokenListingShowsKeysWhenPresent(t *testing.T) {
 	ui.SetLevel(ui.LevelInfo)
 	defer ui.SetLevel(ui.LevelInfo)
 	out, err := captureStdout(func() error {
-		printTokenListing(tok)
+		printTokenListing(tok, "embedded")
 		return nil
 	})
 	if err != nil {
@@ -115,7 +115,7 @@ func TestPrintTokenListingShowsKeysWhenPresent(t *testing.T) {
 
 	ui.SetLevel(ui.LevelVerbose)
 	vout, err := captureStdout(func() error {
-		printTokenListing(tok)
+		printTokenListing(tok, "embedded")
 		return nil
 	})
 	if err != nil {
@@ -308,15 +308,17 @@ func TestPctEncodeIDSingleByte(t *testing.T) {
 	}
 }
 
-// TestResolveEnrollURINonInteractiveErrorsWithoutHanging proves the wizard's
-// URI step refuses to prompt when stdin is not a terminal (the normal case
-// under `go test`): it must return a clear, actionable error immediately
-// instead of blocking on input or silently guessing a key.
-func TestResolveEnrollURINonInteractiveErrorsWithoutHanging(t *testing.T) {
+// TestResolveEnrollTargetNonInteractiveErrorsWithoutHanging proves the
+// flattened token wizard refuses to prompt when stdin is not a terminal (the
+// normal case under `go test`) and no --pkcs11-uri was given: it must return a
+// clear, actionable error immediately instead of blocking on input or silently
+// guessing a token/key. The guard fires before any module is opened, so the
+// module argument is irrelevant here.
+func TestResolveEnrollTargetNonInteractiveErrorsWithoutHanging(t *testing.T) {
 	if isInteractive() {
 		t.Skip("stdin is a terminal in this environment; non-interactive gating not exercised")
 	}
-	_, err := resolveEnrollURI("/nonexistent/pkcs11-module.so")
+	_, _, err := resolveEnrollTarget("/nonexistent/pkcs11-module.so", "", nil)
 	if err == nil {
 		t.Fatal("expected an error when stdin is not a terminal, got nil")
 	}
@@ -336,15 +338,13 @@ func TestResolveEnrollURINonInteractiveErrorsWithoutHanging(t *testing.T) {
 // modulus, proving the import round-trips through the real PKCS#11 FFI path
 // (not just an in-process mock).
 //
-// This deliberately does not use pkcs11.ListTokensAndKeys: that function
-// opens its discovery session without logging in, and ImportRSAPrivateKey
-// creates a CKA_PRIVATE=true object with no matching public-key object, so
-// on SoftHSM the imported key is invisible pre-login regardless of whether
-// the import worked — asserting via ListTokensAndKeys would either be
-// vacuously true (satisfied by the two pre-seeded ids 01/02 from
-// hsmtest.Provision) or, if scoped to id 0x09, always false. Logging in and
-// calling FindRSAPrivateKey(id) instead targets exactly the key this test
-// imports, which the pre-seeded fixture keys (ids 01, 02) cannot satisfy.
+// This logs in and calls FindRSAPrivateKey(id) rather than the no-login
+// pkcs11.ListTokensAndKeys: it targets exactly the PRIVATE (decryption-capable,
+// CKA_PRIVATE=true) object for id 0x09 — which the pre-seeded fixture keys
+// (ids 01, 02) cannot satisfy — proving the private half round-trips through the
+// real FFI path. Pre-login visibility of the imported key (its public half, now
+// created by ImportRSAPrivateKey) is covered separately by
+// TestPKCS11ImportKeyVisiblePreLogin.
 func TestPKCS11ImportCreatesUsableKey(t *testing.T) {
 	mod := hsmtest.Provision(t)
 	t.Setenv("NVOLT_PKCS11_PIN", "1234")
@@ -399,6 +399,53 @@ func TestPKCS11ImportCreatesUsableKey(t *testing.T) {
 	}
 }
 
+// TestPKCS11ImportKeyVisiblePreLogin proves the real bug fix: after import, the
+// key is discoverable WITHOUT logging in, exactly like a generated key. Import
+// now creates a CKO_PUBLIC_KEY object alongside the CKA_PRIVATE private object,
+// so pkcs11.ListTokensAndKeys — which opens its discovery session with no
+// C_Login — reports the imported id. Scoping the assertion to the specific
+// imported id (0x07, distinct from the pre-seeded 01/02) makes it fail if the
+// public object were missing (the pre-fix behavior). Skipped unless
+// NVOLT_TEST_PKCS11_MODULE is set.
+func TestPKCS11ImportKeyVisiblePreLogin(t *testing.T) {
+	mod := hsmtest.Provision(t)
+	t.Setenv("NVOLT_PKCS11_PIN", "1234")
+	dir := t.TempDir()
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pemBytes, err := nvcrypto.EncodePrivateKeyPEM(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(dir, "k.pem")
+	if err := os.WriteFile(keyPath, pemBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runPKCS11Import(mod, "nvolt-test", "imported", "07", keyPath, "env"); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+
+	// No-login discovery must now see id 0x07.
+	tokens, err := pkcs11.ListTokensAndKeys(mod)
+	if err != nil {
+		t.Fatalf("ListTokensAndKeys: %v", err)
+	}
+	found := false
+	for _, tok := range tokens {
+		for _, k := range tok.Keys {
+			if len(k.ID) == 1 && k.ID[0] == 0x07 {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("imported key id 0x07 not visible pre-login; import must create a public-key object")
+	}
+}
+
 // TestResolveEnrollTargetExplicitFlagsWin proves the fully-explicit
 // `--pkcs11-module X --pkcs11-uri Y` path returns exactly those values with no wizard
 // involvement (no autodetection, no key listing) regardless of whether
@@ -407,7 +454,7 @@ func TestPKCS11ImportCreatesUsableKey(t *testing.T) {
 func TestResolveEnrollTargetExplicitFlagsWin(t *testing.T) {
 	const wantModule = "/some/explicit/module.so"
 
-	gotModule, gotURI, err := resolveEnrollTarget(wantModule, wantURI)
+	gotModule, gotURI, err := resolveEnrollTarget(wantModule, wantURI, nil)
 	if err != nil {
 		t.Fatalf("resolveEnrollTarget with explicit flags: %v", err)
 	}

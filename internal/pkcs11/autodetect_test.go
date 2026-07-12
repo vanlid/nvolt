@@ -1,3 +1,5 @@
+//go:build pkcs11 || tpm_static
+
 package pkcs11
 
 import (

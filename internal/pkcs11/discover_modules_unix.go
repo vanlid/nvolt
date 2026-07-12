@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build pkcs11 && !windows
 
 package pkcs11
 
@@ -47,6 +47,7 @@ func detectModulesUnix(proxyCandidates, pathCandidates []string) []DiscoveredMod
 		seen[key] = true
 		mods = append(mods, DiscoveredModule{
 			Path:   path,
+			Name:   "p11-kit",
 			Label:  "p11-kit (all registered tokens)",
 			Source: "p11-kit",
 		})
@@ -65,6 +66,7 @@ func detectModulesUnix(proxyCandidates, pathCandidates []string) []DiscoveredMod
 		seen[key] = true
 		mods = append(mods, DiscoveredModule{
 			Path:   path,
+			Name:   friendlyModuleName(path),
 			Label:  filepath.Base(path),
 			Source: "path",
 		})

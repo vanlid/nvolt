@@ -22,8 +22,10 @@ type ckTemplate struct {
 }
 
 // packTemplate builds a CK_ATTRIBUTE array from attrs. A nil val is the
-// zero-length query form (Value=nil, Len=0).
-func packTemplate(attrs []attr) *ckTemplate {
+// zero-length query form (Value=nil, Len=0). The packed flag exists only to
+// match the Windows signature (see abi_windows.go); unix uses a real Go struct
+// whose layout the compiler fixes, so alignment is not a runtime choice here.
+func packTemplate(attrs []attr, _ bool) *ckTemplate {
 	t := &ckTemplate{arr: make([]CK_ATTRIBUTE, len(attrs))}
 	for i, a := range attrs {
 		t.arr[i].Type = a.typ
@@ -60,14 +62,16 @@ type ckMech struct {
 }
 
 // packMechanismSimple builds a CK_MECHANISM with no parameter (e.g.
-// CKM_RSA_X_509, CKM_RSA_PKCS_KEY_PAIR_GEN).
-func packMechanismSimple(mechanism uintptr) *ckMech {
+// CKM_RSA_X_509, CKM_RSA_PKCS_KEY_PAIR_GEN). The packed flag is ignored on unix
+// (see packTemplate); it exists only to match the Windows signature.
+func packMechanismSimple(mechanism uintptr, _ bool) *ckMech {
 	return &ckMech{m: CK_MECHANISM{Mechanism: mechanism}}
 }
 
 // packMechanismOAEP builds a CK_MECHANISM whose parameter is a
-// CK_RSA_PKCS_OAEP_PARAMS (CKZ_DATA_SPECIFIED style; no source data).
-func packMechanismOAEP(mechanism, hashAlg, mgf, source uintptr) *ckMech {
+// CK_RSA_PKCS_OAEP_PARAMS (CKZ_DATA_SPECIFIED style; no source data). The packed
+// flag is ignored on unix (see packTemplate).
+func packMechanismOAEP(mechanism, hashAlg, mgf, source uintptr, _ bool) *ckMech {
 	p := &ckOAEPParams{HashAlg: hashAlg, Mgf: mgf, SourceType: source}
 	return &ckMech{
 		m:    CK_MECHANISM{Mechanism: mechanism, Param: unsafe.Pointer(p), ParamLen: unsafe.Sizeof(*p)},

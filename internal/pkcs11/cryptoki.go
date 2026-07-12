@@ -20,12 +20,16 @@ const (
 	idxGetFunctionList   = 3  // C_GetFunctionList
 	idxGetSlotList       = 4  // C_GetSlotList
 	idxGetTokenInfo      = 6  // C_GetTokenInfo
+	idxInitToken         = 9  // C_InitToken
+	idxInitPIN           = 10 // C_InitPIN
 	idxOpenSession       = 12 // C_OpenSession
 	idxCloseSession      = 13 // C_CloseSession
 	idxLogin             = 18 // C_Login
 	idxLogout            = 19 // C_Logout
 	idxCreateObject      = 20 // C_CreateObject
+	idxDestroyObject     = 22 // C_DestroyObject
 	idxGetAttributeValue = 24 // C_GetAttributeValue
+	idxSetAttributeValue = 25 // C_SetAttributeValue
 	idxFindObjectsInit   = 26 // C_FindObjectsInit
 	idxFindObjects       = 27 // C_FindObjects
 	idxFindObjectsFinal  = 28 // C_FindObjectsFinal

@@ -115,7 +115,17 @@ func ensurePKCS11MachineInitialized(opts *pkcs11EnrollOpts) error {
 		return fmt.Errorf("this machine already has a software identity %q; switching it to a PKCS#11 key isn't supported yet (it would orphan secrets wrapped to the software key). To re-initialize from scratch, remove %s first", existingID, homePaths.MachineInfo)
 	default: // pkcs11ActionEnroll
 		ui.Step("Enrolling PKCS#11-backed machine identity")
-		if err := enrollPKCS11Machine(opts.module, opts.uri, opts.pinMode); err != nil {
+		// Resolve the module/URI LAZILY — only now that a fresh enrollment is
+		// actually happening. Doing it here rather than at flag-parse means the
+		// reuse path above never triggers a module/token/key prompt for an
+		// identity that would be discarded. nil identity: a fresh enrollment can
+		// adopt any on-card key (unlike rebind, which pins the wizard to the
+		// machine's existing identity key).
+		module, uri, err := resolveEnrollTarget(opts.flagModule, opts.flagURI, nil)
+		if err != nil {
+			return fmt.Errorf("--pkcs11 target resolution failed: %w", err)
+		}
+		if err := enrollPKCS11Machine(module, uri, opts.pinMode); err != nil {
 			return fmt.Errorf("failed to enroll PKCS#11 machine: %w", err)
 		}
 		return nil

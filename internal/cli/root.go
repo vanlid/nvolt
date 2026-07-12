@@ -47,8 +47,15 @@ enforced through wrapped key files.`,
 	},
 }
 
-// Execute runs the root command
+// Execute runs the root command.
+//
+// SilenceErrors/SilenceUsage are set so a failing command prints its error
+// exactly once (main() does that) rather than twice, and so a runtime failure
+// doesn't dump the full flag usage — that's only noise for errors like a wrong
+// PIN or an unsupported operation.
 func Execute() error {
+	rootCmd.SilenceErrors = true
+	rootCmd.SilenceUsage = true
 	return rootCmd.Execute()
 }
 

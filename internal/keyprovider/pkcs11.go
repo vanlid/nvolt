@@ -1,4 +1,4 @@
-//go:build pkcs11
+//go:build pkcs11 || tpm_static
 
 package keyprovider
 
@@ -161,7 +161,11 @@ func selfTestOAEP(sess *pkcs11.Session, priv pkcs11.Object, pub *rsa.PublicKey) 
 		return "", fmt.Errorf("self-test: wrap key: %w", err)
 	}
 
-	if got, err := sess.DecryptOAEPSHA256(priv, ct); err == nil && bytes.Equal(got, aes) {
+	// DecryptOAEPSHA256 already retries transient TPM failures internally, so a
+	// single probe suffices here: success means native OAEP-SHA256; a hard error
+	// (captured for diagnostics) or a non-matching decrypt falls through to raw.
+	got, nativeErr := sess.DecryptOAEPSHA256(priv, ct)
+	if nativeErr == nil && bytes.Equal(got, aes) {
 		return oaepModeNative, nil
 	}
 
@@ -174,6 +178,11 @@ func selfTestOAEP(sess *pkcs11.Session, priv pkcs11.Object, pub *rsa.PublicKey) 
 		}
 	}
 
+	// Surface the underlying native error (previously swallowed) so a genuine
+	// failure is diagnosable instead of a bare "cannot perform" message.
+	if nativeErr != nil {
+		return "", fmt.Errorf("token cannot perform OAEP-SHA256 unwrap: %w", nativeErr)
+	}
 	return "", errors.New("token cannot perform OAEP-SHA256 unwrap")
 }
 
