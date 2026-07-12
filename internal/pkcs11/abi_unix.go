@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build pkcs11 && !windows
 
 package pkcs11
 
@@ -76,3 +76,31 @@ func packMechanismOAEP(mechanism, hashAlg, mgf, source uintptr) *ckMech {
 }
 
 func (c *ckMech) ptr() unsafe.Pointer { return unsafe.Pointer(&c.m) }
+
+// The unix (LP64, naturally-aligned) Cryptoki structs. Only the unix ABI path
+// uses the real Go structs; the Windows path hand-marshals into []byte (see
+// abipack.go), so these live here under `pkcs11 && !windows` rather than in the
+// untagged types.go.
+
+// CK_ATTRIBUTE mirrors the Cryptoki attribute template entry.
+type CK_ATTRIBUTE struct {
+	Type  uintptr
+	Value unsafe.Pointer
+	Len   uintptr
+}
+
+// CK_MECHANISM mirrors the Cryptoki mechanism struct.
+type CK_MECHANISM struct {
+	Mechanism uintptr
+	Param     unsafe.Pointer
+	ParamLen  uintptr
+}
+
+// ckOAEPParams is CK_RSA_PKCS_OAEP_PARAMS for CKM_RSA_PKCS_OAEP.
+type ckOAEPParams struct {
+	HashAlg    uintptr
+	Mgf        uintptr
+	SourceType uintptr
+	SourceData unsafe.Pointer
+	SourceLen  uintptr
+}

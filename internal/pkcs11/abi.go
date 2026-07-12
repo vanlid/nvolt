@@ -1,3 +1,5 @@
+//go:build pkcs11
+
 package pkcs11
 
 // This file defines the platform-neutral PKCS#11 ABI helpers that every call

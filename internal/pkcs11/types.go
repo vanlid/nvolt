@@ -1,9 +1,6 @@
 package pkcs11
 
-import (
-	"fmt"
-	"unsafe"
-)
+import "fmt"
 
 // CKRV is a PKCS#11 CK_RV return code.
 type CKRV uintptr
@@ -68,29 +65,6 @@ const (
 	CKA_EXPONENT_2       uintptr = 0x00000127
 	CKA_COEFFICIENT      uintptr = 0x00000128
 )
-
-// CK_ATTRIBUTE mirrors the Cryptoki attribute template entry.
-type CK_ATTRIBUTE struct {
-	Type  uintptr
-	Value unsafe.Pointer
-	Len   uintptr
-}
-
-// CK_MECHANISM mirrors the Cryptoki mechanism struct.
-type CK_MECHANISM struct {
-	Mechanism uintptr
-	Param     unsafe.Pointer
-	ParamLen  uintptr
-}
-
-// ckOAEPParams is CK_RSA_PKCS_OAEP_PARAMS for CKM_RSA_PKCS_OAEP.
-type ckOAEPParams struct {
-	HashAlg    uintptr
-	Mgf        uintptr
-	SourceType uintptr
-	SourceData unsafe.Pointer
-	SourceLen  uintptr
-}
 
 func (r CKRV) String() string { return ckrvName(r) }
 

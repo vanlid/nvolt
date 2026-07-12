@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"os"
 	"strconv"
 	"strings"
 )
@@ -48,11 +47,4 @@ func selectOption(w io.Writer, r io.Reader, title string, options []string) (int
 		return n - 1, nil
 	}
 	return 0, fmt.Errorf("selectOption: too many invalid selections")
-}
-
-// selectOptionStdio is selectOption wired to the real terminal (os.Stdout/
-// os.Stdin). Callers driving the interactive pkcs11 wizard use this; tests
-// exercise selectOption directly with injected reader/writer.
-func selectOptionStdio(title string, options []string) (int, error) {
-	return selectOption(os.Stdout, os.Stdin, title, options)
 }

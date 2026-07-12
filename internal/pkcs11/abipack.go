@@ -1,9 +1,11 @@
+//go:build pkcs11
+
 package pkcs11
 
-// Windows (LLP64 + #pragma pack(1)) struct marshaling. These functions are
-// deliberately NOT build-tagged so they can be unit-tested on any host (see
-// abipack_test.go); abi_windows.go wires them into the platform helpers, and
-// nothing on unix calls them at runtime.
+// Windows (LLP64 + #pragma pack(1)) struct marshaling. These functions carry no
+// OS constraint (only the pkcs11 tag) so they can be unit-tested on any host via
+// `go test -tags pkcs11` (see abipack_test.go); abi_windows.go wires them into
+// the platform helpers, and nothing on unix calls them at runtime.
 //
 // Every function returns a self-contained []byte: any pointer field that must
 // point at data (an attribute value, a mechanism parameter) is stored in a
