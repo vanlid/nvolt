@@ -263,7 +263,7 @@ func (d *pkcs11Decrypter) Decrypt(_ io.Reader, wrapped []byte, _ crypto.Decrypte
 // bound to the enrolled key plus a close func that finalizes the session and
 // module. The public key comes from the machine's stored PEM (not the token),
 // matching the software backend.
-func loadPKCS11Decrypter(src types.KeySource) (crypto.Decrypter, func() error, error) {
+func loadPKCS11Decrypter(src *types.KeySource) (crypto.Decrypter, func() error, error) {
 	pub, err := machinePublicKey()
 	if err != nil {
 		return nil, nil, err
@@ -318,7 +318,7 @@ func loadPKCS11Decrypter(src types.KeySource) (crypto.Decrypter, func() error, e
 		return nil, nil, err
 	}
 
-	dec := &pkcs11Decrypter{src: src, pub: pub, sess: sess, priv: priv}
+	dec := &pkcs11Decrypter{src: *src, pub: pub, sess: sess, priv: priv}
 	closeFn := func() error {
 		_ = sess.Close()
 		return m.Close()

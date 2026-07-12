@@ -15,7 +15,7 @@ import (
 // provider.go's LoadDecrypter switches to on src.Source == "pkcs11"; in the
 // default (tag-off) build it must be the stub from pkcs11_stub.go.
 func TestPKCS11KeySourceUnsupportedInDefaultBuild(t *testing.T) {
-	_, _, err := loadPKCS11Decrypter(types.KeySource{Source: "pkcs11"})
+	_, _, err := loadPKCS11Decrypter(&types.KeySource{Source: "pkcs11"})
 	if err == nil || !strings.Contains(err.Error(), "not built with PKCS#11") {
 		t.Fatalf("want 'not built with PKCS#11' error, got %v", err)
 	}

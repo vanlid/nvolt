@@ -18,7 +18,7 @@ func LoadDecrypter() (crypto.Decrypter, func() error, error) {
 	}
 	switch src.Source {
 	case sourcePKCS11:
-		return loadPKCS11Decrypter(src) // Task 6
+		return loadPKCS11Decrypter(&src) // Task 6
 	default:
 		return loadSoftwareDecrypter()
 	}
