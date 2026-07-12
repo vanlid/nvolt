@@ -454,7 +454,7 @@ func runMachineGrant(machineID, environment, project string) error {
 	if err != nil {
 		return fmt.Errorf("failed to load machine key: %w", err)
 	}
-	defer closeDec()
+	defer func() { _ = closeDec() }()
 	masterKey, err := vault.UnwrapMasterKey(paths, environment, dec)
 	if err != nil {
 		// Check if it's an access denied error

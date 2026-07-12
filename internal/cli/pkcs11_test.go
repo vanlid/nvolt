@@ -21,6 +21,10 @@ import (
 	"github.com/iluxav/nvolt/pkg/types"
 )
 
+// wantURI is the fixture SoftHSM token/id URI shared by every test in this
+// file that needs a valid PKCS#11 URI for the "nvolt-test" token.
+const wantURI = "pkcs11:token=nvolt-test;id=%01;type=private"
+
 // readMachineInfo loads the current (HOME-scoped) machine's machine-info.json,
 // failing the test on any error.
 func readMachineInfo(t *testing.T) *types.MachineInfo {
@@ -140,7 +144,7 @@ func TestEnrollPKCS11Machine(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("NVOLT_PKCS11_PIN", "1234")
 
-	uri := "pkcs11:token=nvolt-test;id=%01;type=private"
+	uri := wantURI
 	// The URI is technical detail (see verbosity_test.go), shown only at
 	// Verbose: raise the level here so this test can still assert on the
 	// literal, uncorrupted URI in the enroll banner (Fix 1).
@@ -181,7 +185,7 @@ func TestEnrollPKCS11MachineRefusesToOverwriteExistingIdentity(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("NVOLT_PKCS11_PIN", "1234")
 
-	uri := "pkcs11:token=nvolt-test;id=%01;type=private"
+	uri := wantURI
 	if _, err := captureStdout(func() error {
 		return enrollPKCS11Machine(mod, uri, "env")
 	}); err != nil {
@@ -220,7 +224,7 @@ func TestEnrollPKCS11MachineInformsAboutOrphanedSoftwareKeyInsteadOfDeleting(t *
 		t.Fatal(err)
 	}
 
-	uri := "pkcs11:token=nvolt-test;id=%01;type=private"
+	uri := wantURI
 	out, err := captureStdout(func() error {
 		return enrollPKCS11Machine(mod, uri, "env")
 	})
@@ -241,7 +245,7 @@ func TestEnrollPKCS11MachineInformsAboutOrphanedSoftwareKeyInsteadOfDeleting(t *
 // the escaping needed for a URI to render literally through
 // ui.PrintKeyValue -> ui.Info's Sprintf-then-Fprintf double pass (Fix 1).
 func TestPercentEscapeSurvivesUIDoublePass(t *testing.T) {
-	uri := "pkcs11:token=nvolt-test;id=%01;type=private"
+	uri := wantURI
 	escaped := strings.ReplaceAll(uri, "%", "%%")
 
 	out, err := captureStdout(func() error {
@@ -373,12 +377,12 @@ func TestPKCS11ImportCreatesUsableKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 	sess, err := m.OpenSession("nvolt-test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 	if err := sess.Login("1234"); err != nil {
 		t.Fatal(err)
 	}
@@ -402,7 +406,6 @@ func TestPKCS11ImportCreatesUsableKey(t *testing.T) {
 // depend on.
 func TestResolveEnrollTargetExplicitFlagsWin(t *testing.T) {
 	const wantModule = "/some/explicit/module.so"
-	const wantURI = "pkcs11:token=nvolt-test;id=%01;type=private"
 
 	gotModule, gotURI, err := resolveEnrollTarget(wantModule, wantURI)
 	if err != nil {

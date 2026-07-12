@@ -37,7 +37,7 @@ func loadKeySource() (types.KeySource, error) {
 // saveKeySource persists the given key source into the current machine's
 // machine-info.json, preserving all other machine info fields. It writes
 // atomically via vault.WriteFileAtomic, matching SaveMachineInfo's pattern.
-func saveKeySource(src types.KeySource) error {
+func saveKeySource(src *types.KeySource) error {
 	homePaths, err := vault.GetHomePaths()
 	if err != nil {
 		return err
@@ -48,7 +48,7 @@ func saveKeySource(src types.KeySource) error {
 		return fmt.Errorf("failed to load machine info: %w", err)
 	}
 
-	machineInfo.KeySource = &src
+	machineInfo.KeySource = src
 
 	data, err := json.MarshalIndent(machineInfo, "", "  ")
 	if err != nil {

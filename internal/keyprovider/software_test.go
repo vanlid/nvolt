@@ -22,9 +22,9 @@ func withTempNvoltConfig(t *testing.T) string {
 	}
 	t.Cleanup(func() {
 		if had {
-			os.Setenv("NVOLT_CONFIG", original)
+			_ = os.Setenv("NVOLT_CONFIG", original)
 		} else {
-			os.Unsetenv("NVOLT_CONFIG")
+			_ = os.Unsetenv("NVOLT_CONFIG")
 		}
 	})
 

@@ -4,6 +4,9 @@ package pkcs11
 
 import "testing"
 
+// testTokenLabel is the SoftHSM fixture token label used by this file's tests.
+const testTokenLabel = "nvolt-test"
+
 // TestListRSAKeys enumerates the SoftHSM fixture token and asserts the
 // nvolt-test / id=01 RSA key is discovered with its bit size and label.
 func TestListRSAKeys(t *testing.T) {
@@ -17,7 +20,7 @@ func TestListRSAKeys(t *testing.T) {
 
 	var found bool
 	for _, k := range keys {
-		if k.TokenLabel != "nvolt-test" {
+		if k.TokenLabel != testTokenLabel {
 			continue
 		}
 		if len(k.ID) == 1 && k.ID[0] == 0x01 {
@@ -49,7 +52,7 @@ func TestListTokensAndKeysIncludesToken(t *testing.T) {
 
 	var found *TokenListing
 	for i := range tokens {
-		if tokens[i].Label == "nvolt-test" {
+		if tokens[i].Label == testTokenLabel {
 			found = &tokens[i]
 			break
 		}

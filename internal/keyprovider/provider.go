@@ -5,6 +5,10 @@ package keyprovider
 
 import "crypto"
 
+// sourcePKCS11 identifies a hardware-token-backed key source in machine.json's
+// key_source.source field (vs. the default software-file-backed source).
+const sourcePKCS11 = "pkcs11"
+
 // LoadDecrypter returns the decrypter for THIS machine plus a close func.
 // It reads the machine key-source from machine.json; absent source ⇒ software.
 func LoadDecrypter() (crypto.Decrypter, func() error, error) {
@@ -13,8 +17,8 @@ func LoadDecrypter() (crypto.Decrypter, func() error, error) {
 		return nil, nil, err
 	}
 	switch src.Source {
-	case "pkcs11":
-		return loadPKCS11Decrypter(src) // Task 6
+	case sourcePKCS11:
+		return loadPKCS11Decrypter(&src) // Task 6
 	default:
 		return loadSoftwareDecrypter()
 	}

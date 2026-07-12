@@ -25,6 +25,14 @@ import (
 // failure paths inside Decrypt collapse to this one value.
 var errUnwrap = errors.New("pkcs11: unwrap failed")
 
+// oaepModeNative/oaepModeRaw are the two OAEP unwrap modes selfTestOAEP can
+// pin: "native" means the token itself performs OAEP-SHA256; "raw" means the
+// token only does raw RSA and nvolt strips the OAEP padding in software.
+const (
+	oaepModeNative = "native"
+	oaepModeRaw    = "raw"
+)
+
 // Enroll validates that a PKCS#11 token can serve as this machine's key backend
 // and pins the OAEP unwrap mode it actually supports.
 //
@@ -48,13 +56,13 @@ func Enroll(module, uri, pinMode string, pin func() (string, error)) (types.KeyS
 	if err != nil {
 		return types.KeySource{}, nil, err
 	}
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	sess, err := m.OpenSession(token)
 	if err != nil {
 		return types.KeySource{}, nil, err
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 
 	switch {
 	case sess.ProtectedAuthPath():
@@ -98,7 +106,7 @@ func Enroll(module, uri, pinMode string, pin func() (string, error)) (types.KeyS
 	}
 
 	src := types.KeySource{
-		Source:   "pkcs11",
+		Source:   sourcePKCS11,
 		Module:   module,
 		URI:      uri,
 		PinMode:  pinMode,
@@ -126,13 +134,13 @@ func ReadTokenPublicKey(module, uri string) (*rsa.PublicKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	sess, err := m.OpenSession(token)
 	if err != nil {
 		return nil, err
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 
 	pub, err := sess.RSAPublicKeyByID(id)
 	if err != nil {
@@ -154,7 +162,7 @@ func selfTestOAEP(sess *pkcs11.Session, priv pkcs11.Object, pub *rsa.PublicKey) 
 	}
 
 	if got, err := sess.DecryptOAEPSHA256(priv, ct); err == nil && bytes.Equal(got, aes) {
-		return "native", nil
+		return oaepModeNative, nil
 	}
 
 	// Fall back to raw RSA + software OAEP unpad. Reached when the token lacks
@@ -162,7 +170,7 @@ func selfTestOAEP(sess *pkcs11.Session, priv pkcs11.Object, pub *rsa.PublicKey) 
 	if raw, err := sess.DecryptRawRSA(priv, ct); err == nil {
 		k := (pub.N.BitLen() + 7) / 8
 		if got, err := nvcrypto.UnpadOAEPSHA256(raw, k); err == nil && bytes.Equal(got, aes) {
-			return "raw", nil
+			return oaepModeRaw, nil
 		}
 	}
 
@@ -230,13 +238,13 @@ func (d *pkcs11Decrypter) Public() crypto.PublicKey { return d.pub }
 // opaque errUnwrap so no padding-oracle signal leaks.
 func (d *pkcs11Decrypter) Decrypt(_ io.Reader, wrapped []byte, _ crypto.DecrypterOpts) ([]byte, error) {
 	switch d.src.OAEPMode {
-	case "native":
+	case oaepModeNative:
 		out, err := d.sess.DecryptOAEPSHA256(d.priv, wrapped)
 		if err != nil {
 			return nil, errUnwrap
 		}
 		return out, nil
-	case "raw":
+	case oaepModeRaw:
 		raw, err := d.sess.DecryptRawRSA(d.priv, wrapped)
 		if err != nil {
 			return nil, errUnwrap
@@ -255,7 +263,7 @@ func (d *pkcs11Decrypter) Decrypt(_ io.Reader, wrapped []byte, _ crypto.Decrypte
 // bound to the enrolled key plus a close func that finalizes the session and
 // module. The public key comes from the machine's stored PEM (not the token),
 // matching the software backend.
-func loadPKCS11Decrypter(src types.KeySource) (crypto.Decrypter, func() error, error) {
+func loadPKCS11Decrypter(src *types.KeySource) (crypto.Decrypter, func() error, error) {
 	pub, err := machinePublicKey()
 	if err != nil {
 		return nil, nil, err
@@ -310,7 +318,7 @@ func loadPKCS11Decrypter(src types.KeySource) (crypto.Decrypter, func() error, e
 		return nil, nil, err
 	}
 
-	dec := &pkcs11Decrypter{src: src, pub: pub, sess: sess, priv: priv}
+	dec := &pkcs11Decrypter{src: *src, pub: pub, sess: sess, priv: priv}
 	closeFn := func() error {
 		_ = sess.Close()
 		return m.Close()

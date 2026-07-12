@@ -77,7 +77,7 @@ func runPull(environment string, projects []string, write bool) error {
 	if err != nil {
 		return fmt.Errorf("failed to load machine key: %w", err)
 	}
-	defer closeDec()
+	defer func() { _ = closeDec() }()
 
 	// Load and merge secrets from all projects
 	allSecrets := make(map[string]string)

@@ -31,7 +31,7 @@ func captureStdout(f func() error) (string, error) {
 
 	fnErr := f()
 
-	w.Close()
+	_ = w.Close()
 	var buf bytes.Buffer
 	_, _ = io.Copy(&buf, r)
 	return buf.String(), fnErr

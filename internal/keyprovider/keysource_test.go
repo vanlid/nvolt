@@ -50,7 +50,7 @@ func TestSaveKeySourceRoundTrip(t *testing.T) {
 		OAEPMode: "raw",
 	}
 
-	if err := saveKeySource(want); err != nil {
+	if err := saveKeySource(&want); err != nil {
 		t.Fatalf("saveKeySource() error = %v", err)
 	}
 

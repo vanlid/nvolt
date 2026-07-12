@@ -102,7 +102,7 @@ func TestPushPullThroughPKCS11Machine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadDecrypter: %v", err)
 	}
-	defer closeFn()
+	defer func() { _ = closeFn() }()
 
 	// push-side wrap to the card's public key, pull-side unwrap on the token.
 	aes, err := nvcrypto.GenerateAESKey()

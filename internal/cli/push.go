@@ -242,7 +242,7 @@ func unwrapMasterKey(paths *vault.Paths, environment string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to load machine key: %w", err)
 	}
-	defer closeDec()
+	defer func() { _ = closeDec() }()
 
 	// Unwrap master key
 	wrappedKey, err := base64.StdEncoding.DecodeString(wrappedKeyData.WrappedKey)

@@ -21,7 +21,7 @@ var errNoPKCS11 = errors.New("this nvolt was not built with PKCS#11 support; reb
 // dispatches here when a machine's key_source is "pkcs11". With no PKCS#11
 // loader compiled in there is nothing to load, so this returns a clear error
 // instead of panicking or silently doing nothing.
-func loadPKCS11Decrypter(_ types.KeySource) (crypto.Decrypter, func() error, error) {
+func loadPKCS11Decrypter(_ *types.KeySource) (crypto.Decrypter, func() error, error) {
 	return nil, nil, errNoPKCS11
 }
 

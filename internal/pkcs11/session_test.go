@@ -34,14 +34,14 @@ func TestImportRSAPrivateKeyRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 	// Creating a token object (CKA_TOKEN=true) requires a read-write session,
 	// same as GenerateRSAKeyPair.
 	sess, err := m.OpenSessionRW("nvolt-test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 	if err := sess.Login("1234"); err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestGenerateRSAKeyPair(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 	// Key generation creates token objects (CKA_TOKEN=true), which requires a
 	// read-write session; OpenSessionRW is the RW counterpart to the
 	// read-only OpenSession used by every other (read-only) caller.
@@ -107,7 +107,7 @@ func TestGenerateRSAKeyPair(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 	if err := sess.Login("1234"); err != nil {
 		t.Fatal(err)
 	}
@@ -146,12 +146,12 @@ func TestTokenFlagsReadCorrectly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 	sess, err := m.OpenSession("nvolt-test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 
 	if !sess.LoginRequired() {
 		t.Fatal("LoginRequired() = false, want true for SoftHSM token")
@@ -166,12 +166,12 @@ func TestOAEPRoundTripAgainstToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 	sess, err := m.OpenSession("nvolt-test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 	if err := sess.Login("1234"); err != nil {
 		t.Fatal(err)
 	}
@@ -220,12 +220,12 @@ func TestNativeOAEPDecryptPathSHA1(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 	sess, err := m.OpenSession("nvolt-test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 	if err := sess.Login("1234"); err != nil {
 		t.Fatal(err)
 	}
@@ -278,12 +278,12 @@ func TestRawRSAOAEPRoundTripAgainstToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 	sess, err := m.OpenSession("nvolt-test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 	if err := sess.Login("1234"); err != nil {
 		t.Fatal(err)
 	}

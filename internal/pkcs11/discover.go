@@ -26,7 +26,7 @@ func ListTokensAndKeys(module string) ([]TokenListing, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 	if err := m.initialize(); err != nil {
 		return nil, err
 	}
