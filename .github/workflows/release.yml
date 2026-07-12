@@ -310,6 +310,40 @@ jobs:
           path: ${{ env.MODULE_ARTIFACT }}
           retention-days: 1
 
+      # Debug variant of the module — DEV CHANNEL ONLY. Rebuilds the wolf stack
+      # with WOLF_DEBUG=1 (-DDEBUG_WOLFTPM), so wolfTPM prints every TPM2 command
+      # and its response code (TPM_RC) to stderr. That turns an opaque
+      # CKR_FUNCTION_FAILED from C_Initialize into the actual failing operation +
+      # code. Not stripped; never published on rc/stable. Point nvolt at it with
+      # --pkcs11-module / NVOLT_PKCS11_MODULE to capture the failing op on real
+      # hardware. NB: this is a full second wolf build, so it adds build time to
+      # dev releases only. Absolute OUTPUT_PATH so the file lands at the repo root
+      # regardless of the script's internal cd's.
+      - name: Build + stage debug wolfPKCS11 module (dev only)
+        if: matrix.variant == 'pkcs11' && matrix.pkcs11_target != '' && contains(needs.version.outputs.version, '-dev')
+        env:
+          GOOS: ${{ matrix.goos }}
+          TARGET: ${{ matrix.pkcs11_target }}
+        run: |
+          set -euo pipefail
+          case "$GOOS" in
+            windows) EXT=dll ;;
+            linux)   EXT=so ;;
+            darwin)  EXT=dylib ;;
+            *)       EXT=bin ;;
+          esac
+          out="wolfpkcs11-tpm-${TARGET}-debug.${EXT}"
+          WOLF_DEBUG=1 TARGET="$TARGET" build/pkcs11/build-module.sh "$PWD/$out"
+          echo "DEBUG_MODULE_ARTIFACT=$out" >> "$GITHUB_ENV"
+
+      - name: Upload debug wolfPKCS11 module (dev only)
+        if: matrix.variant == 'pkcs11' && matrix.pkcs11_target != '' && contains(needs.version.outputs.version, '-dev')
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.DEBUG_MODULE_ARTIFACT }}
+          path: ${{ env.DEBUG_MODULE_ARTIFACT }}
+          retention-days: 1
+
   upload-to-r2:
     name: Upload binaries to R2
     needs: [version, build]

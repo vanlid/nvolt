@@ -41,6 +41,21 @@ REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 OUTPUT_PATH=${1:-${OUTPUT_PATH:-"$REPO_ROOT/internal/pkcs11/dist/module.bin"}}
 JOBS=${JOBS:-$(nproc 2>/dev/null || echo 4)}
 
+# WOLF_DEBUG=1 compiles the wolf stack with DEBUG_WOLFTPM, so wolfTPM prints every
+# TPM2 command and its response code (TPM_RC) to stderr. That turns an opaque
+# CKR_FUNCTION_FAILED from C_Initialize into the actual failing operation +
+# code — the difference between "storage hierarchy is Windows-owned" and "NV out
+# of space" and "unsupported key template". Debug builds are NOT stripped (keep
+# symbols/asserts). Only wired into the dev-channel debug artifacts; normal and
+# release builds leave WOLF_DEBUG unset, so WOLF_DEBUG_DEFS is empty and nothing
+# changes.
+WOLF_DEBUG_DEFS=""
+WOLF_DEBUG_STRIP=1
+if [ "${WOLF_DEBUG:-0}" = "1" ]; then
+  WOLF_DEBUG_DEFS="-DDEBUG_WOLFTPM"
+  WOLF_DEBUG_STRIP=0
+fi
+
 # Resolve a relative STATIC_ARCHIVES against the repo root NOW, before we cd into
 # the temp build dir: the install step below runs from $WORK, so a relative path
 # would otherwise land in $WORK/<path> instead of the repo checkout.
@@ -159,7 +174,7 @@ EOF
   git clone --depth 1 --branch "$WOLFTPM_TAG" https://github.com/wolfSSL/wolfTPM.git "$WORK/wolfTPM"
   cmake_build "$WORK/wolfTPM" -DBUILD_SHARED_LIBS=OFF \
     -DWOLFTPM_EXAMPLES=OFF -DWOLFTPM_INTERFACE=WINAPI -DWOLFTPM_SINGLE_THREADED=yes \
-    -DCMAKE_C_FLAGS="-D_WIN32_WINNT=$WINNT"
+    -DCMAKE_C_FLAGS="-D_WIN32_WINNT=$WINNT $WOLF_DEBUG_DEFS"
   cmake --install "$WORK/wolfTPM/build" >&2
   # wolfTPM's cmake install omits the example HAL header that wolfPKCS11's TPM
   # path #includes as <hal/tpm_io.h> (autotools installs it; cmake does not).
@@ -188,7 +203,7 @@ EOF
     -DCMAKE_PREFIX_PATH="$PREFIX" -DCMAKE_INSTALL_PREFIX="$PREFIX" \
     -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
     -DWOLFPKCS11_TPM=yes -DWOLFPKCS11_SINGLE_THREADED=yes \
-    -DCMAKE_C_FLAGS="-D_WIN32_WINNT=$WINNT -DWOLFPKCS11_TPM_STORE -DWP11_DLL" \
+    -DCMAKE_C_FLAGS="-D_WIN32_WINNT=$WINNT -DWOLFPKCS11_TPM_STORE -DWP11_DLL $WOLF_DEBUG_DEFS" \
     -DCMAKE_SHARED_LINKER_FLAGS="-L$PREFIX/lib -static-libgcc" \
     -DCMAKE_C_STANDARD_LIBRARIES="-ltbs" >&2
   # Build only the library target: wolfPKCS11's examples #include <dlfcn.h>
@@ -202,7 +217,7 @@ EOF
   [ -n "$DLL" ] || { echo "cmake build produced no wolfPKCS11 DLL" >&2; exit 1; }
   mkdir -p "$(dirname "$OUTPUT_PATH")"
   cp "$DLL" "$OUTPUT_PATH"
-  "$TRIPLE-strip" --strip-unneeded "$OUTPUT_PATH" 2>/dev/null || true
+  [ "$WOLF_DEBUG_STRIP" = "1" ] && { "$TRIPLE-strip" --strip-unneeded "$OUTPUT_PATH" 2>/dev/null || true; }
 
   log "RESULT"
   echo "target:  $TARGET (cmake cross via $TRIPLE)" >&2
@@ -271,7 +286,7 @@ git clone --depth 1 --branch "$WOLFTPM_TAG" https://github.com/wolfSSL/wolfTPM.g
 cd "$WORK/wolfTPM"
 ./autogen.sh
 ./configure $HOST_FLAG --prefix="$PREFIX" --enable-static --disable-shared "$TPM_FLAG" \
-  --disable-examples --with-wolfcrypt="$PREFIX" CFLAGS="-fPIC"
+  --disable-examples --with-wolfcrypt="$PREFIX" CFLAGS="-fPIC $WOLF_DEBUG_DEFS"
 make -j"$JOBS"
 make install
 
@@ -281,7 +296,7 @@ cd "$WORK/wolfPKCS11"
 ./autogen.sh
 ./configure $HOST_FLAG --prefix="$PREFIX" --enable-static --enable-singlethreaded --enable-wolftpm --disable-dh \
   --disable-examples --with-wolfcrypt="$PREFIX" \
-  CPPFLAGS="-I$PREFIX/include" CFLAGS="-DWOLFPKCS11_TPM_STORE -I$PREFIX/include" \
+  CPPFLAGS="-I$PREFIX/include" CFLAGS="-DWOLFPKCS11_TPM_STORE -I$PREFIX/include $WOLF_DEBUG_DEFS" \
   LDFLAGS="-L$PREFIX/lib"
 # On Windows, wolfPKCS11's examples #include <dlfcn.h> (Unix dlopen, absent on
 # mingw), and --disable-examples doesn't stop `make all` building them — so build
@@ -292,7 +307,7 @@ cd "$WORK/wolfPKCS11"
 # wolfSSL fix. Other targets keep plain `make all` unchanged.
 if [[ "$HOST_TRIPLE" == *mingw* ]]; then
   make -j"$JOBS" src/libwolfpkcs11.la \
-    CFLAGS="-g -O2 -DWOLFPKCS11_TPM_STORE -I$PREFIX/include -include unistd.h -Wno-error -Wno-attributes"
+    CFLAGS="-g -O2 -DWOLFPKCS11_TPM_STORE -I$PREFIX/include -include unistd.h -Wno-error -Wno-attributes $WOLF_DEBUG_DEFS"
 else
   make -j"$JOBS"
 fi
@@ -315,7 +330,7 @@ mkdir -p "$(dirname "$OUTPUT_PATH")"
 cp "$SO" "$OUTPUT_PATH"
 # Use the target's strip for cross builds (native strip can't touch PE/ARM objects).
 STRIP="strip"; [ -n "$HOST_TRIPLE" ] && command -v "${HOST_TRIPLE}-strip" >/dev/null && STRIP="${HOST_TRIPLE}-strip"
-"$STRIP" --strip-unneeded "$OUTPUT_PATH" 2>/dev/null || true
+[ "$WOLF_DEBUG_STRIP" = "1" ] && { "$STRIP" --strip-unneeded "$OUTPUT_PATH" 2>/dev/null || true; }
 
 log "RESULT"
 echo "target:  ${TARGET:-native ($(uname -s)-$(uname -m))}" >&2
