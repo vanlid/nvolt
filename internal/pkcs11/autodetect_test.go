@@ -1,3 +1,5 @@
+//go:build pkcs11 || wolfpkcs11_static
+
 package pkcs11
 
 import (

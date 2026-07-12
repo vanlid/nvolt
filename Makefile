@@ -11,7 +11,7 @@ module:
 
 # Build nvolt with the wolfPKCS11 module embedded (requires `make module` first).
 build-embedded:
-	go build -tags wolfpkcs11_embed -o bin/nvolt ./cmd/nvolt
+	go build -tags "pkcs11 wolfpkcs11_embed" -o bin/nvolt ./cmd/nvolt
 
 # Build nvolt with dynamic PKCS#11 support (-tags pkcs11): purego dlopen/
 # LoadLibrary, cgo-free. Reaches external tokens (OpenSC/YubiKey) on Linux,

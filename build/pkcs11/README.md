@@ -105,13 +105,13 @@ binary blob:
 build/pkcs11/build-module.sh
 
 # 2. Build nvolt WITH the embedded module:
-go build -tags wolfpkcs11_embed -o nvolt ./cmd/nvolt
+go build -tags "pkcs11 wolfpkcs11_embed" -o nvolt ./cmd/nvolt
 #   or: make build-embedded
 ```
 
 - **Default builds** (`go build ./...`, CI, `go test`) use a stub — no blob
   required, binary stays lean, everything stays cgo-free.
-- **`-tags wolfpkcs11_embed`** compiles the ~1.1 MB module into the binary.
+- **`-tags "pkcs11 wolfpkcs11_embed"`** compiles the ~1.1 MB module into the binary.
 
 When compiled in, the built-in module appears as a **discovered option** like any
 external one — `DetectModules` lists it, so `nvolt pkcs11 list` (and the enroll
