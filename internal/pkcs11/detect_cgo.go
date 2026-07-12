@@ -1,0 +1,16 @@
+//go:build tpm_static && !pkcs11
+
+package pkcs11
+
+// DetectModules returns just the statically-linked wolfPKCS11 module. There is
+// no filesystem probing and no "embedded" sentinel in this build — the module
+// is the binary, so the single "builtin" entry is always both the default and
+// the only option.
+func DetectModules() []DiscoveredModule {
+	return []DiscoveredModule{{
+		Path:   "builtin",
+		Name:   "Built-in TPM module",
+		Label:  "wolfPKCS11 (static, TPM)",
+		Source: "builtin",
+	}}
+}

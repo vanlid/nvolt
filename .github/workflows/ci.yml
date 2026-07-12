@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request: {}
+
+jobs:
+  test:
+    name: Build, vet, and test (incl. SoftHSM2 PKCS#11 integration)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.24.3"
+
+      # Proves the static, cgo-free build actually works: this is the whole
+      # point of the purego-based PKCS#11 client (no C toolchain required).
+      - name: Build (CGO_ENABLED=0)
+        run: CGO_ENABLED=0 go build ./...
+
+      # Keep the nvolt_dev-tagged maintenance subcommands (`pkcs11 delete`/
+      # `relabel`, dev-channel binaries only) compiling. They ship in dev builds,
+      # so a break must fail CI here rather than surface only at release time.
+      # The pkcs11 loader is purego (cgo-free), so the windows cross-target
+      # compiles without a C toolchain.
+      - name: Build nvolt_dev pkcs11 code (linux + windows cross)
+        run: |
+          CGO_ENABLED=0 go build -tags "pkcs11 nvolt_dev" ./...
+          GOOS=windows CGO_ENABLED=0 go build -tags "pkcs11 nvolt_dev" ./...
+
+      # Strictly vet the new/feature packages added for PKCS#11/YubiKey
+      # support. These are vet-clean, so this must pass with zero findings.
+      - name: Vet feature packages
+        run: go vet ./internal/pkcs11/... ./internal/keyprovider/... ./internal/pinentry/... ./internal/crypto/...
+
+      # softhsm2 provides the test token; opensc provides pkcs11-tool. The
+      # integration tests provision their own isolated SoftHSM token in-code
+      # (internal/hsmtest) using these binaries — no fixture script needed.
+      - name: Install SoftHSM2 + OpenSC (pkcs11-tool)
+        run: sudo apt-get update && sudo apt-get install -y softhsm2 opensc
+
+      # Two passes, because the PKCS#11 tests have TWO gates that must agree:
+      # a compile-time gate (//go:build pkcs11 selects the real purego loader over
+      # the stub) and a runtime gate (they t.Skip unless NVOLT_TEST_PKCS11_MODULE
+      # is set). A single no-tag pass that set the module env satisfied only the
+      # runtime gate, so the integration tests ran against the STUB and failed
+      # with "not built with PKCS#11 support". Each pass now satisfies both gates
+      # consistently.
+      #
+      # -vet=off: internal/cli has pre-existing non-constant-format vet findings
+      # (machine.go/pull.go/push.go/run.go/sync.go/vault.go, ~24) unrelated to this
+      # feature; new packages are vet-checked strictly in the vet step above.
+      # -race is omitted: it needs CGO_ENABLED=1 + a C toolchain, which this
+      # project deliberately avoids (purego, no cgo).
+
+      # Pass 1 — software / no-pkcs11 build. NVOLT_TEST_PKCS11_MODULE is unset, so
+      # the PKCS#11 integration tests self-skip; this exercises the stub path
+      # (pkcs11_stub_test.go and the rest of the default build).
+      - name: Unit tests (software build)
+        run: CGO_ENABLED=0 go test -vet=off ./...
+
+      # Pass 2 — pkcs11 build with the SoftHSM module. This is the ONLY pass that
+      # compiles the real loader, so it's where every //go:build pkcs11 test
+      # (loader/session/discover + the keyprovider/cli PKCS#11 integration tests)
+      # actually runs.
+      - name: PKCS#11 integration tests (pkcs11 build + SoftHSM)
+        run: |
+          MODULE=$(ls /usr/lib/softhsm/libsofthsm2.so /usr/lib/*/softhsm/libsofthsm2.so 2>/dev/null | head -1)
+          export NVOLT_TEST_PKCS11_MODULE="$MODULE" NVOLT_PKCS11_PIN=1234
+          CGO_ENABLED=0 go test -tags pkcs11 -vet=off ./...

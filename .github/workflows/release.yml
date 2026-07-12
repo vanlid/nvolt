@@ -1,6 +1,9 @@
 name: Build and Release Binaries
 
 on:
+  # Tags (v*) cut stable/rc releases. Dev releases are cut on demand via
+  # workflow_dispatch (Actions tab / gh workflow run) rather than on every push,
+  # to avoid a full matrix build per commit.
   push:
     tags:
       - "v*"
@@ -8,59 +11,284 @@ on:
 
 env:
   GO_VERSION: "1.24.3"
+  # llvm-mingw release used to cross-build the windows-arm64 embedded PKCS#11
+  # module (clang-based mingw toolchain; ships its own aarch64-w64-mingw32-gcc
+  # wrapper). Bump deliberately — this is the least-tested cross target.
+  LLVM_MINGW_VERSION: "20260616"
 
 jobs:
-  build:
-    name: Build binaries
+  # Compute the version ONCE so the injected binary version and the release
+  # title can never drift apart.
+  version:
+    name: Compute version
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.compute.outputs.version }}
+      is_dev: ${{ steps.compute.outputs.is_dev }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          # Full history + tags so `git describe` can see the release tags.
+          fetch-depth: 0
+
+      - name: Compute version
+        id: compute
+        run: |
+          if [[ "$GITHUB_REF" =~ ^refs/tags/v[0-9] ]]; then
+            # Tagged release: use the tag verbatim.
+            VERSION="${GITHUB_REF#refs/tags/}"
+            IS_DEV=false
+          else
+            # Dev build. Version scheme: v<upstream X.Y.Z>.<N>-dev.<commits>.<sha>.
+            # X.Y.Z is the ACTUAL upstream base tag — no patch bump, because the
+            # .N sub-version already sorts the fork build after upstream
+            # (v1.0.25.1 > v1.0.25). N is FORK_BUILD from versions.env. The
+            # git-describe --match keeps v-number tags and drops the rolling
+            # 'dev' tag; --exclude '*-*' drops fork (-p11/-rc) and upstream
+            # pre-release tags so we base on a real upstream release.
+            # <commits>.<sha> keep each dev build unique within a given N.
+            N=$(sed -n 's/^FORK_BUILD=//p' build/pkcs11/versions.env | tr -dc '0-9')
+            N="${N:-1}"
+            DESC=$(git describe --tags --long --match 'v[0-9]*' --exclude '*-*' 2>/dev/null || true)
+            if [[ "$DESC" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)-([0-9]+)-(g[0-9a-f]+)$ ]]; then
+              VERSION="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}.${N}-dev.${BASH_REMATCH[4]}.${BASH_REMATCH[5]}"
+            else
+              # No upstream release tag anywhere in history.
+              VERSION="v0.0.0.${N}-dev.0.g${GITHUB_SHA::7}"
+            fi
+            IS_DEV=true
+          fi
+          echo "Computed version: $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "is_dev=$IS_DEV" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.output }}
+    needs: version
+    # Most variants build (or cross-build) on amd64; the arm64 tpm-static variant
+    # runs on a native arm64 runner so it can use apt's musl-gcc directly instead
+    # of a flaky external cross-toolchain (see that matrix entry's runs_on).
+    runs-on: ${{ matrix.runs_on || 'ubuntu-latest' }}
     strategy:
+      fail-fast: false
       matrix:
         include:
-          # Linux
-          - goos: linux
+          # ---------------------------------------------------------------
+          # Variant 1 (dist default): pkcs11 dynamic. -tags pkcs11 (cgo-free,
+          # CGO_ENABLED=0), all 6 os/arch. On the TPM targets (linux + windows)
+          # also embed the wolfPKCS11 module built by build/pkcs11/build-module.sh
+          # via the extra tpm_embed tag. Darwin has no TPM, so pkcs11 only. This
+          # is the primary binary — dist exists for PKCS#11 support — so it takes
+          # the plain `nvolt-<os>-<arch>` name.
+          # ---------------------------------------------------------------
+          - variant: pkcs11
+            goos: linux
             goarch: amd64
             output: nvolt-linux-amd64
-          - goos: linux
+            tags: "pkcs11 tpm_embed"
+            pkcs11_target: linux-amd64
+            cross_setup: "" # native gcc/make already on the runner
+          - variant: pkcs11
+            goos: linux
             goarch: arm64
             output: nvolt-linux-arm64
-          # macOS
-          - goos: darwin
-            goarch: amd64
-            output: nvolt-darwin-amd64
-          - goos: darwin
-            goarch: arm64
-            output: nvolt-darwin-arm64
-          # Windows
-          - goos: windows
+            tags: "pkcs11 tpm_embed"
+            pkcs11_target: linux-arm64
+            cross_setup: arm64-gnu
+          - variant: pkcs11
+            goos: windows
             goarch: amd64
             output: nvolt-windows-amd64.exe
-          - goos: windows
+            tags: "pkcs11 tpm_embed"
+            pkcs11_target: windows-amd64
+            cross_setup: mingw64
+          - variant: pkcs11
+            goos: windows
             goarch: arm64
             output: nvolt-windows-arm64.exe
+            tags: "pkcs11 tpm_embed"
+            pkcs11_target: windows-arm64
+            cross_setup: llvm-mingw
+          - variant: pkcs11
+            goos: darwin
+            goarch: amd64
+            output: nvolt-darwin-amd64
+            tags: "pkcs11"
+            pkcs11_target: "" # no TPM on macOS -> no embedded module
+            cross_setup: ""
+          - variant: pkcs11
+            goos: darwin
+            goarch: arm64
+            output: nvolt-darwin-arm64
+            tags: "pkcs11"
+            pkcs11_target: ""
+            cross_setup: ""
+
+          # ---------------------------------------------------------------
+          # Variant 2: no-pkcs11 software-only static. No build tags,
+          # CGO_ENABLED=0, Linux only. Kept as the release path that
+          # cross-compiles the no-PKCS#11 (stub) code — a break in the stubs is
+          # caught here across arches — and ships a minimal pure-Go fully-static
+          # binary for containers. tpm-static below is a functional superset but
+          # links the wolf C stack; this is the small pure-Go build (same as
+          # `go install …@latest` with no tags).
+          # ---------------------------------------------------------------
+          - variant: static
+            goos: linux
+            goarch: amd64
+            output: nvolt-linux-amd64-no-pkcs11-static
+          - variant: static
+            goos: linux
+            goarch: arm64
+            output: nvolt-linux-arm64-no-pkcs11-static
+
+          # ---------------------------------------------------------------
+          # Variant 3: nvolt-tpm-static, fully-static cgo binary (musl libc),
+          # Linux only. wolfSSL/wolfTPM/wolfPKCS11 built as static archives and
+          # linked in with -tags tpm_static, CGO_ENABLED=1.
+          # ---------------------------------------------------------------
+          - variant: tpm
+            goos: linux
+            goarch: amd64
+            output: nvolt-linux-amd64-tpm-static
+            cross_setup: musl-native
+            musl_cc: musl-gcc
+          - variant: tpm
+            goos: linux
+            goarch: arm64
+            output: nvolt-linux-arm64-tpm-static
+            # Native arm64 runner: build with apt's musl-gcc directly (same as the
+            # amd64 tpm-static above), no cross-toolchain download needed.
+            runs_on: ubuntu-24.04-arm
+            cross_setup: musl-native
+            musl_cc: musl-gcc
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
 
+      # -----------------------------------------------------------------
+      # Cross-toolchain / build-dependency installation (pkcs11 + tpm only)
+      # -----------------------------------------------------------------
+      - name: Install autotools + apt cross toolchain
+        if: matrix.variant != 'static'
+        env:
+          CROSS_SETUP: ${{ matrix.cross_setup }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          PKGS="autoconf automake libtool"
+          case "$CROSS_SETUP" in
+            arm64-gnu)   PKGS="$PKGS gcc-aarch64-linux-gnu" ;;
+            # Windows targets build the wolf stack with CMake+Ninja, NOT
+            # autotools: libtool cannot emit a self-contained DLL from the static
+            # wolf archives under mingw. CMake drives <triple>-gcc -shared
+            # directly. cmake is preinstalled on the runner; ninja is not.
+            mingw64)     PKGS="$PKGS gcc-mingw-w64-x86-64 ninja-build" ;;
+            llvm-mingw)  PKGS="$PKGS ninja-build" ;; # aarch64 toolchain from the llvm-mingw step below
+            musl-native) PKGS="$PKGS musl-tools" ;;
+            *) ;; # darwin / native: toolchain installed by a later step (or none needed)
+          esac
+          sudo apt-get install -y $PKGS
+
+      - name: Install llvm-mingw (windows-arm64 pkcs11 cross toolchain)
+        if: matrix.cross_setup == 'llvm-mingw'
+        run: |
+          set -euo pipefail
+          asset="llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-ubuntu-22.04-x86_64.tar.xz"
+          curl -fsSL -o /tmp/llvm-mingw.tar.xz \
+            "https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW_VERSION}/${asset}"
+          sudo tar -xJf /tmp/llvm-mingw.tar.xz -C /opt
+          echo "/opt/llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-ubuntu-22.04-x86_64/bin" >> "$GITHUB_PATH"
+
+      # -----------------------------------------------------------------
+      # Build the embedded wolfPKCS11 module (pkcs11 variant, TPM targets)
+      # -----------------------------------------------------------------
+      - name: Build embedded wolfPKCS11 module
+        if: matrix.variant == 'pkcs11' && matrix.pkcs11_target != ''
+        env:
+          TARGET: ${{ matrix.pkcs11_target }}
+        run: |
+          set -euo pipefail
+          TARGET="$TARGET" build/pkcs11/build-module.sh
+
+      # -----------------------------------------------------------------
+      # Build static wolfSSL/wolfTPM/wolfPKCS11 archives (nvolt-tpm-static variant)
+      # -----------------------------------------------------------------
+      - name: Build static wolfPKCS11 archives (musl)
+        if: matrix.variant == 'tpm'
+        env:
+          CC: ${{ matrix.musl_cc }}
+        run: |
+          set -euo pipefail
+          STATIC_ARCHIVES=internal/pkcs11/dist/static TPM_INTERFACE=devtpm build/pkcs11/build-module.sh /dev/null
+
+      # -----------------------------------------------------------------
+      # Build the Go binary
+      # -----------------------------------------------------------------
       - name: Build binary
+        if: matrix.variant != 'tpm'
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
+          BUILD_TAGS: ${{ matrix.tags }}
+          OUTPUT: ${{ matrix.output }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
-          # Extract version from git tag (remove 'v' prefix if present)
-          VERSION=${GITHUB_REF#refs/tags/}
-          if [[ ! "$VERSION" =~ ^v[0-9] ]]; then
-            VERSION="dev"
+          set -euo pipefail
+          TAGS="$BUILD_TAGS"
+          # Dev channel ONLY: fold in the nvolt_dev tag so dev builds ship the
+          # `pkcs11 delete`/`relabel` maintenance subcommands. rc/stable
+          # (-rc/-p11) must NOT get them. Gate on the version containing '-dev',
+          # mirroring the debug-module dev gating below. It only takes effect on
+          # the pkcs11 variants that carry the loader; harmless on the others.
+          case "$VERSION" in
+            *-dev*) TAGS="${TAGS:+$TAGS }nvolt_dev" ;;
+          esac
+          TAGS_ARGS=()
+          if [ -n "$TAGS" ]; then
+            TAGS_ARGS=(-tags "$TAGS")
           fi
 
-          # Build with version injected
-          go build -trimpath -ldflags="-s -w -X github.com/iluxav/nvolt/internal/cli.version=${VERSION}" -o ${{ matrix.output }} cmd/nvolt/main.go
+          go build -trimpath "${TAGS_ARGS[@]}" -ldflags="-s -w -X github.com/iluxav/nvolt/internal/cli.version=${VERSION}" -o "$OUTPUT" cmd/nvolt/main.go
+
+      - name: Build nvolt-tpm-static binary (static musl, cgo)
+        if: matrix.variant == 'tpm'
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 1
+          CC: ${{ matrix.musl_cc }}
+          OUTPUT: ${{ matrix.output }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Dev channel ONLY: add nvolt_dev so the dev tpm-static binary also
+          # carries the `pkcs11 delete`/`relabel` maintenance subcommands (their
+          # Session methods are compiled under tpm_static too). rc/stable omit it.
+          TAGS="tpm_static netgo osusergo"
+          case "$VERSION" in
+            *-dev*) TAGS="$TAGS nvolt_dev" ;;
+          esac
+          go build -trimpath -tags "$TAGS" \
+            -ldflags="-s -w -X github.com/iluxav/nvolt/internal/cli.version=${VERSION} -linkmode external -extldflags \"-static\"" \
+            -o "$OUTPUT" cmd/nvolt/main.go
+
+      - name: Verify nvolt-tpm-static is statically linked
+        if: matrix.variant == 'tpm'
+        env:
+          OUTPUT: ${{ matrix.output }}
+        run: |
+          set -euo pipefail
+          file "$OUTPUT"
+          file "$OUTPUT" | grep -q "statically linked"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -69,13 +297,84 @@ jobs:
           path: ${{ matrix.output }}
           retention-days: 1
 
+      # Publish the raw wolfPKCS11 module (the exact bytes embedded into module.bin)
+      # as a standalone, sortably-named download for every TPM target — a
+      # self-contained wolfSSL+wolfTPM+wolfPKCS11 module useful to anyone wanting a
+      # TPM-backed PKCS#11 provider for other apps (p11-kit, ssh PKCS11Provider,
+      # the OpenSSL pkcs11 provider, ...), not just nvolt's embedded loader. Its
+      # only runtime deps are system libraries (Windows: tbs.dll for the TPM,
+      # kernel32, ws2_32, crypt32, advapi32, the CRT — no libgcc/winpthread/
+      # vcruntime; Linux: libc/libm). GPL NOTICE is generated in the release job.
+      - name: Stage standalone wolfPKCS11 module
+        if: matrix.variant == 'pkcs11' && matrix.pkcs11_target != ''
+        env:
+          GOOS: ${{ matrix.goos }}
+          TARGET: ${{ matrix.pkcs11_target }}
+        run: |
+          set -euo pipefail
+          case "$GOOS" in
+            windows) EXT=dll ;;
+            linux)   EXT=so ;;
+            darwin)  EXT=dylib ;;
+            *)       EXT=bin ;;
+          esac
+          cp internal/pkcs11/dist/module.bin "wolfpkcs11-tpm-${TARGET}.${EXT}"
+          echo "MODULE_ARTIFACT=wolfpkcs11-tpm-${TARGET}.${EXT}" >> "$GITHUB_ENV"
+
+      - name: Upload standalone wolfPKCS11 module
+        if: matrix.variant == 'pkcs11' && matrix.pkcs11_target != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.MODULE_ARTIFACT }}
+          path: ${{ env.MODULE_ARTIFACT }}
+          retention-days: 1
+
+      # Debug variant of the module — DEV CHANNEL ONLY. Rebuilds the wolf stack
+      # with WOLF_DEBUG=1 (-DDEBUG_WOLFTPM), so wolfTPM prints every TPM2 command
+      # and its response code (TPM_RC) to stderr. That turns an opaque
+      # CKR_FUNCTION_FAILED from C_Initialize into the actual failing operation +
+      # code. Not stripped; never published on rc/stable. Point nvolt at it with
+      # --pkcs11-module / NVOLT_PKCS11_MODULE to capture the failing op on real
+      # hardware. NB: this is a full second wolf build, so it adds build time to
+      # dev releases only. Absolute OUTPUT_PATH so the file lands at the repo root
+      # regardless of the script's internal cd's.
+      - name: Build + stage debug wolfPKCS11 module (dev only)
+        if: matrix.variant == 'pkcs11' && matrix.pkcs11_target != '' && contains(needs.version.outputs.version, '-dev')
+        env:
+          GOOS: ${{ matrix.goos }}
+          TARGET: ${{ matrix.pkcs11_target }}
+        run: |
+          set -euo pipefail
+          case "$GOOS" in
+            windows) EXT=dll ;;
+            linux)   EXT=so ;;
+            darwin)  EXT=dylib ;;
+            *)       EXT=bin ;;
+          esac
+          out="wolfpkcs11-tpm-${TARGET}-debug.${EXT}"
+          WOLF_DEBUG=1 TARGET="$TARGET" build/pkcs11/build-module.sh "$PWD/$out"
+          echo "DEBUG_MODULE_ARTIFACT=$out" >> "$GITHUB_ENV"
+
+      - name: Upload debug wolfPKCS11 module (dev only)
+        if: matrix.variant == 'pkcs11' && matrix.pkcs11_target != '' && contains(needs.version.outputs.version, '-dev')
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.DEBUG_MODULE_ARTIFACT }}
+          path: ${{ env.DEBUG_MODULE_ARTIFACT }}
+          retention-days: 1
+
   upload-to-r2:
     name: Upload binaries to R2
-    needs: build
+    needs: [version, build]
+    # R2 / install.nvolt.io is the UPSTREAM distribution channel. This fork
+    # publishes to GitHub Releases (github-release job below), so this job is
+    # gated to the upstream repo and never runs here — kept to minimise
+    # divergence from upstream and preserve the option.
+    if: github.repository == 'iluxav/nvolt' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -103,56 +402,114 @@ jobs:
           acl = private
           EOF
 
-      - name: Upload binaries to R2
+      - name: Upload binaries + checksums to R2
         env:
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
-          # Get version from tag or use 'latest'
-          VERSION=${GITHUB_REF#refs/tags/}
-          if [[ ! "$VERSION" =~ ^v[0-9] ]]; then
-            VERSION="latest"
-          fi
-
-          # Move all binaries to a flat structure
+          # Flatten binaries + include the install script, then checksum.
           mkdir -p upload
           find ./binaries -type f -exec mv {} ./upload/ \;
+          cp install.sh upload/install.sh
+          chmod +x upload/install.sh
+          (cd upload && sha256sum * > SHA256SUMS)
 
-          # Copy install script
+          # This job only runs on tags, so publish to both the version dir and
+          # the rolling 'latest/' prefix.
+          for f in ./upload/*; do
+            rclone copy "$f" "r2:${R2_BUCKET_NAME}/${VERSION}/" --s3-no-check-bucket --progress
+            rclone copy "$f" "r2:${R2_BUCKET_NAME}/latest/" --s3-no-check-bucket --progress
+          done
+          echo "All binaries uploaded to R2."
+
+  github-release:
+    name: Publish binaries to GitHub Releases
+    needs: [version, build]
+    # Best-effort: publish whatever variants built, even if some matrix jobs
+    # failed (a hard cross-target can flake without blocking the rest). Runs for
+    # every channel — dev, rc, and stable -p11 — as long as the version job
+    # succeeded; failed variants simply upload no artifact and are omitted, and a
+    # later re-run adds them once fixed.
+    if: ${{ always() && needs.version.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./binaries
+
+      - name: Collect binaries + checksums
+        run: |
+          set -euo pipefail
+          mkdir -p upload
+          find ./binaries -type f -exec mv {} ./upload/ \;
           cp install.sh upload/install.sh
           chmod +x upload/install.sh
 
-          # Upload each binary to R2
-          for binary in ./upload/*; do
-            filename=$(basename "$binary")
-            echo "Uploading $filename to R2..."
+          # GPL hygiene for the standalone wolfpkcs11-tpm-<os>-<arch>.{so,dll} modules:
+          # wolfSSL / wolfTPM / wolfPKCS11 are GPLv2. Emit one NOTICE covering all
+          # targets, with the pinned versions (single source of truth: versions.env)
+          # and a pointer to the build recipe as corresponding source.
+          # shellcheck source=build/pkcs11/versions.env
+          source build/pkcs11/versions.env
+          cat > upload/wolfpkcs11-NOTICE.txt <<EOF
+          The standalone wolfpkcs11-tpm-<os>-<arch>.{so,dll} modules published here are
+          self-contained PKCS#11 providers with wolfSSL and wolfTPM statically
+          linked into wolfPKCS11 (TPM 2.0 backed; Windows uses the native TBS API).
 
-            # Upload with version
-            rclone copy "$binary" "r2:${R2_BUCKET_NAME}/${VERSION}/" --s3-no-check-bucket --progress
+          Components and pinned versions:
+            wolfSSL     ${WOLFSSL_TAG}      https://github.com/wolfSSL/wolfssl
+            wolfTPM     ${WOLFTPM_TAG}      https://github.com/wolfSSL/wolfTPM
+            wolfPKCS11  ${WOLFPKCS11_TAG}   https://github.com/wolfSSL/wolfPKCS11
 
-            # Also upload to 'latest' if this is a tagged release
-            if [[ "$VERSION" =~ ^v[0-9] ]]; then
-              rclone copy "$binary" "r2:${R2_BUCKET_NAME}/latest/" --s3-no-check-bucket --progress
-            fi
-          done
+          License: GPLv2 (GNU General Public License, version 2). Each component is
+          distributed under the terms of the GPLv2; see each upstream repository for
+          the full license text and COPYING file. (wolfSSL additionally offers
+          commercial licensing.)
 
-          echo "All binaries uploaded successfully!"
+          Corresponding source / build recipe: these modules are reproducible from
+          the pinned tags above with build/pkcs11/build-module.sh in the
+          nvolt-pkcs11 repository, which fetches each component at its tag and links
+          them into the module.
+          EOF
 
-      - name: Generate checksums
-        run: |
-          cd upload
-          sha256sum * > SHA256SUMS
+          (cd upload && sha256sum * > SHA256SUMS)
 
-      - name: Upload checksums to R2
+      - name: Publish to GitHub Releases
         env:
-          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+          IS_DEV: ${{ needs.version.outputs.is_dev }}
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
-          if [[ ! "$VERSION" =~ ^v[0-9] ]]; then
-            VERSION="latest"
-          fi
-
-          rclone copy upload/SHA256SUMS "r2:${R2_BUCKET_NAME}/${VERSION}/" --s3-no-check-bucket --progress
-
-          if [[ "$VERSION" =~ ^v[0-9] ]]; then
-            rclone copy upload/SHA256SUMS "r2:${R2_BUCKET_NAME}/latest/" --s3-no-check-bucket --progress
+          if [[ "$IS_DEV" == "false" ]]; then
+            # Tagged release. Fork version scheme: v<upstream X.Y.Z>[.<fork N>]-<channel>,
+            # where the optional .N sub-version increments per fork build on the
+            # same upstream base, and the suffix is the channel:
+            #   -p11    -> stable PKCS#11 release (FULL release; e.g. v1.0.26.2-p11)
+            #   -rc<M>  -> release candidate      (prerelease; e.g. v1.0.26.1-rc1)
+            #   -dev    -> rolling dev build       (prerelease)
+            # -p11 is a FULL release so GitHub's /releases/latest/ (what
+            # install.sh pulls) resolves to it; every other -suffix is a prerelease.
+            case "$VERSION" in
+              *-p11) PRERELEASE="" ;;
+              *-*)   PRERELEASE="--prerelease" ;;
+              *)     PRERELEASE="" ;;
+            esac
+            gh release create "$VERSION" ./upload/* \
+              --title "$VERSION" --generate-notes $PRERELEASE
+          else
+            # workflow_dispatch: a single rolling "dev" pre-release. The TAG stays
+            # "dev" (stable URL, re-pointed at the built commit each run); the
+            # TITLE carries the full SemVer dev version, matching `nvolt version`.
+            gh release delete dev --yes --cleanup-tag 2>/dev/null || true
+            gh release create dev ./upload/* \
+              --target "$GITHUB_SHA" \
+              --title "$VERSION" \
+              --prerelease \
+              --notes "Rolling development build \`${VERSION}\` (commit \`${GITHUB_SHA}\`) — not a stable release. The \`dev\` tag always points at the newest dev build."
           fi

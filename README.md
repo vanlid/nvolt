@@ -51,23 +51,41 @@
 ### Quick Install (Recommended)
 
 ```bash
-# macOS and Linux (also works in Git Bash on Windows)
-curl -fsSL https://install.nvolt.io/latest/install.sh | bash
+# macOS and Linux (also works in Git Bash on Windows) — installs the PKCS#11 build
+curl -fsSL https://raw.githubusercontent.com/vanlid/nvolt-pkcs11/dist/install.sh | sh
 ```
 
-### Using Go
+Grabs the latest stable (`-p11`) release for your platform from GitHub Releases.
+Set `NVOLT_TAG=dev` to install the rolling development build instead.
+
+### Build from source
+
+The PKCS#11 support lives on this fork, not the upstream module path, so
+`go install …@latest` would just fetch plain upstream nvolt. Build from a clone
+instead — `go install ./cmd/nvolt` compiles the working tree by directory, so
+the module path doesn't matter:
 
 ```bash
-go install github.com/iluxav/nvolt/cmd/nvolt@latest
-```
-
-### From Source
-
-```bash
-git clone https://github.com/iluxav/nvolt.git
+git clone https://github.com/vanlid/nvolt-pkcs11.git
 cd nvolt
-make build
+
+# PKCS#11 (default): external hardware tokens (YubiKey/OpenSC) + external TPM
+# modules (e.g. tpm2-pkcs11). cgo-free (purego); builds on Linux/Windows/macOS.
+go install -tags pkcs11 ./cmd/nvolt
+
+# Software keys only, no PKCS#11 — fully static (matches nvolt-*-no-pkcs11-static):
+CGO_ENABLED=0 go install ./cmd/nvolt
+
+# PKCS#11 + the BUNDLED wolfPKCS11 TPM module (Linux/Windows):
+make install-embedded
+
+# Fully-static, TPM-only binary (Linux/musl, matches nvolt-*-tpm-static):
+make build-tpm    # needs prebuilt static archives — see build/pkcs11/README.md
 ```
+
+Prefer no build? Download `nvolt-<os>-<arch>` for your platform from the
+[Releases](https://github.com/vanlid/nvolt-pkcs11/releases) page — see
+[Which binary do I need?](#using-a-hardware-key-pkcs11) below.
 
 ## Quick Start
 
@@ -342,6 +360,14 @@ nvolt pkcs11 import --token my-yubikey --privkey key.pem
 
 nvolt can keep this machine's private key on a hardware token (like a YubiKey) instead of in a file. The key is created on the device and never leaves it — nvolt only sees the public key, and the token itself does the decryption.
 
+**Which binary do I need?** This fork's default release binary — `nvolt-<os>-<arch>` on the [Releases](https://github.com/vanlid/nvolt-pkcs11/releases) page — **is** the PKCS#11 build, so on every platform you have hardware/TPM support out of the box. The three variants:
+
+- **`nvolt-<os>-<arch>` (default)** — PKCS#11: hardware tokens (YubiKey, OpenSC) plus, on Linux/Windows, a **bundled** TPM module. cgo-free, so it's cross-platform (Linux, Windows, macOS). From a clone, `go install -tags pkcs11 ./cmd/nvolt` gets PKCS#11 for external tokens/modules but *not* the bundled TPM module — download this release, or run `make install-embedded`, for that.
+- **`nvolt-linux-<arch>-no-pkcs11-static`** — software keys only, minimal pure-Go fully-static binary (Alpine/scratch/musl containers). No PKCS#11. Linux only. From a clone, `CGO_ENABLED=0 go install ./cmd/nvolt` reproduces this exact static binary (a plain build is **dynamically linked**); the upstream `install.nvolt.io` script ships an equivalent software-only binary. (`-tpm-static` is a functional superset but links the wolfSSL/wolfTPM C stack; this is the small pure-Go build.)
+- **`nvolt-linux-<arch>-tpm-static`** — TPM only, fully static with wolfPKCS11 linked in (`-tags tpm_static`). Linux only; built from a clone with `make build-tpm` (needs prebuilt wolfPKCS11 static archives).
+
+See [`build/pkcs11/README.md`](build/pkcs11/README.md#build-variants) for the full variant matrix and per-platform details.
+
 A typical setup looks like this:
 
 ```bash
@@ -366,6 +392,22 @@ Or set `NVOLT_PKCS11_MODULE` once in your shell profile so you never type it aga
 Then plug in the token and run `nvolt pkcs11 list` again. (`pkcs11-tool --list-slots`, which comes with OpenSC, is a quick way to confirm the card is detected at all.)
 
 **Entering your PIN.** By default nvolt asks for the token PIN and hides it as you type. For automation, use `--pkcs11-pin-mode env` to read it from `NVOLT_PKCS11_PIN`, or `--pkcs11-pin-mode none` for tokens that don't require a PIN.
+
+### Using the built-in TPM module
+
+This fork's default binary ships a self-contained wolfPKCS11 module backed by your machine's TPM — no OpenSC or external module needed. Select it with `--pkcs11-module embedded`; its token label is `wolfPKCS11`, and a blank token is auto-initialized on the first `generate`/`import`.
+
+```bash
+# Auto-inits the blank token, picks id 01, and prints the next-step command
+nvolt pkcs11 generate --pkcs11-module embedded --token wolfPKCS11
+
+nvolt init --pkcs11 --pkcs11-module embedded --pkcs11-uri 'pkcs11:token=wolfPKCS11;id=%01;type=private'
+nvolt push -k KEY=value && nvolt pull
+```
+
+`nvolt pkcs11 import --pkcs11-module embedded --token wolfPKCS11 --privkey key.pem` imports an existing key the same way (PKCS#1 or PKCS#8).
+
+Some firmware TPMs (notably AMD fTPM) intermittently fail an OAEP decrypt; nvolt retries automatically, and a persistent failure may need a BIOS/fTPM firmware update.
 
 ## Security
 
