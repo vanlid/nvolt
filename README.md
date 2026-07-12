@@ -55,19 +55,34 @@
 curl -fsSL https://install.nvolt.io/latest/install.sh | bash
 ```
 
-### Using Go
+### Build from source
+
+The PKCS#11 support lives on this fork, not the upstream module path, so
+`go install …@latest` would just fetch plain upstream nvolt. Build from a clone
+instead — `go install ./cmd/nvolt` compiles the working tree by directory, so
+the module path doesn't matter:
 
 ```bash
-go install github.com/iluxav/nvolt/cmd/nvolt@latest
-```
-
-### From Source
-
-```bash
-git clone https://github.com/iluxav/nvolt.git
+git clone https://github.com/vanlid/nvolt.git
 cd nvolt
-make build
+
+# PKCS#11 (default): external hardware tokens (YubiKey/OpenSC) + external TPM
+# modules (e.g. tpm2-pkcs11). cgo-free (purego); builds on Linux/Windows/macOS.
+go install -tags pkcs11 ./cmd/nvolt
+
+# Software keys only, no PKCS#11 — fully static (matches nvolt-*-no-pkcs11-static):
+CGO_ENABLED=0 go install ./cmd/nvolt
+
+# PKCS#11 + the BUNDLED wolfPKCS11 TPM module (Linux/Windows):
+make install-embedded
+
+# Fully-static, TPM-only binary (Linux/musl, matches nvolt-*-tpm-static):
+make build-tpm    # needs prebuilt static archives — see build/pkcs11/README.md
 ```
+
+Prefer no build? Download `nvolt-<os>-<arch>` for your platform from the
+[Releases](https://github.com/vanlid/nvolt/releases) page — see
+[Which binary do I need?](#using-a-hardware-key-pkcs11) below.
 
 ## Quick Start
 
@@ -339,10 +354,11 @@ nvolt pkcs11 generate --token my-yubikey --label my-key --id 01 --bits 2048
 
 nvolt can keep this machine's private key on a hardware token (like a YubiKey) instead of in a file. The key is created on the device and never leaves it — nvolt only sees the public key, and the token itself does the decryption.
 
-**Which binary do I need?** The static binary from `install.nvolt.io` and `go install github.com/iluxav/nvolt/cmd/nvolt@latest` is software-keys-only — it doesn't include PKCS#11 support at all, by design (that's what keeps it a small, fully static binary). To reach a hardware token or TPM, build (or download) one of the other variants:
+**Which binary do I need?** This fork's default release binary — `nvolt-<os>-<arch>` on the [Releases](https://github.com/vanlid/nvolt/releases) page — **is** the PKCS#11 build, so on every platform you have hardware/TPM support out of the box. The three variants:
 
-- **Hardware tokens (YubiKey, OpenSC) or a TPM** — build with `-tags pkcs11`: `go install -tags pkcs11 github.com/iluxav/nvolt/cmd/nvolt@latest` works cross-platform (Linux, Windows, macOS) since this variant stays cgo-free. Prebuilt binaries for this variant are published as GitHub Release assets, not through the default install script.
-- **TPM only, fully static (Alpine/scratch/musl containers)** — `nvolt-tpm`, built with `-tags wolfpkcs11_static`. Linux only, and not `go install`-able (it needs prebuilt wolfPKCS11 static archives); also published as a GitHub Release asset.
+- **`nvolt-<os>-<arch>` (default)** — PKCS#11: hardware tokens (YubiKey, OpenSC) plus, on Linux/Windows, a **bundled** TPM module. cgo-free, so it's cross-platform (Linux, Windows, macOS). From a clone, `go install -tags pkcs11 ./cmd/nvolt` gets PKCS#11 for external tokens/modules but *not* the bundled TPM module — download this release, or run `make install-embedded`, for that.
+- **`nvolt-linux-<arch>-no-pkcs11-static`** — software keys only, minimal pure-Go fully-static binary (Alpine/scratch/musl containers). No PKCS#11. Linux only. From a clone, `CGO_ENABLED=0 go install ./cmd/nvolt` reproduces this exact static binary (a plain build is **dynamically linked**); the upstream `install.nvolt.io` script ships an equivalent software-only binary. (`-tpm-static` is a functional superset but links the wolfSSL/wolfTPM C stack; this is the small pure-Go build.)
+- **`nvolt-linux-<arch>-tpm-static`** — TPM only, fully static with wolfPKCS11 linked in (`-tags tpm_static`). Linux only; built from a clone with `make build-tpm` (needs prebuilt wolfPKCS11 static archives).
 
 See [`build/pkcs11/README.md`](build/pkcs11/README.md#build-variants) for the full variant matrix and per-platform details.
 

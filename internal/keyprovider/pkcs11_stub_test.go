@@ -1,4 +1,4 @@
-//go:build !pkcs11 && !wolfpkcs11_static
+//go:build !pkcs11 && !tpm_static
 
 package keyprovider
 

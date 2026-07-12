@@ -90,19 +90,19 @@ func TestMaterializeModuleRejectsEmpty(t *testing.T) {
 }
 
 // TestExtractEmbeddedModuleNotCompiledIn asserts that, in a binary built WITHOUT
-// the wolfpkcs11_embed tag (the default test build), extracting the embedded
+// the tpm_embed tag (the default test build), extracting the embedded
 // module fails with an actionable error naming the build tag rather than
 // silently producing nothing. Extraction happens at the load boundary (Open),
 // so this is where a "not compiled in" request surfaces.
 func TestExtractEmbeddedModuleNotCompiledIn(t *testing.T) {
 	if embeddedModuleAvailable {
-		t.Skip("binary built with wolfpkcs11_embed; module is present")
+		t.Skip("binary built with tpm_embed; module is present")
 	}
 	_, err := extractEmbeddedModule()
 	if err == nil {
 		t.Fatal("expected an error extracting the embedded module without the build tag")
 	}
-	if !strings.Contains(err.Error(), "wolfpkcs11_embed") {
+	if !strings.Contains(err.Error(), "tpm_embed") {
 		t.Fatalf("error should name the build tag, got: %v", err)
 	}
 }

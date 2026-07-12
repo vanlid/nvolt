@@ -1,4 +1,4 @@
-//go:build !pkcs11 && !wolfpkcs11_static
+//go:build !pkcs11 && !tpm_static
 
 package keyprovider
 
@@ -12,7 +12,7 @@ import (
 
 // errNoPKCS11 is returned by every PKCS#11 entry point in a build compiled
 // without a PKCS#11 loader (the default fully-static binary). Use the
-// `-tags pkcs11` (dynamic) or `-tags wolfpkcs11_static` (static) build for
+// `-tags pkcs11` (dynamic) or `-tags tpm_static` (static) build for
 // hardware-backed keys.
 var errNoPKCS11 = errors.New("this nvolt was not built with PKCS#11 support; use rebind to switch config to using a software key or use a build with PKCS#11 support")
 

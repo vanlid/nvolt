@@ -179,7 +179,7 @@ jobs:
             echo "| wolfTPM | \`$WOLFTPM_TAG\` | \`$new_wolftpm\` |"
             echo "| wolfPKCS11 | \`$WOLFPKCS11_TAG\` | \`$new_wolfpkcs11\` |"
             echo
-            echo "Verify \`build/pkcs11/build-module.sh\` still builds against the new tags before merging — the release matrix (\`release.yml\`) will rebuild and publish \`nvolt-*-pkcs11\`/\`nvolt-tpm-*\` once this lands on \`$BASE_REF\`."
+            echo "Verify \`build/pkcs11/build-module.sh\` still builds against the new tags before merging — the release matrix (\`release.yml\`) will rebuild and publish \`nvolt-*\` (pkcs11), \`nvolt-*-no-pkcs11-static\` and \`nvolt-*-tpm-static\` once this lands on \`$BASE_REF\`."
           } > "$body_file"
 
           gh pr create \
@@ -273,7 +273,7 @@ jobs:
             echo "git merge upstream/$UPSTREAM_TAG   # or: git rebase upstream/$UPSTREAM_TAG"
             echo '```'
             echo
-            echo "Once merged, the release matrix (\`.github/workflows/release.yml\`) will rebuild and publish \`nvolt-*-pkcs11\`/\`nvolt-tpm-*\` reflecting both this upstream tag and the pinned wolf tags."
+            echo "Once merged, the release matrix (\`.github/workflows/release.yml\`) will rebuild and publish \`nvolt-*\` (pkcs11), \`nvolt-*-no-pkcs11-static\` and \`nvolt-*-tpm-static\` reflecting both this upstream tag and the pinned wolf tags."
             echo
             echo "Opened automatically by \`.github/workflows/track-releases.yml\`."
           } > "$body_file"

@@ -98,7 +98,7 @@ func appendEmbeddedOption(mods []DiscoveredModule, available bool) []DiscoveredM
 func extractEmbeddedModule() (string, error) {
 	if len(embeddedModuleBytes) == 0 {
 		return "", errors.New("this nvolt was built without an embedded PKCS#11 module; " +
-			"rebuild with -tags wolfpkcs11_embed (see build/pkcs11/README.md) " +
+			"rebuild with -tags tpm_embed (see build/pkcs11/README.md) " +
 			"or pass --pkcs11-module with a real module path")
 	}
 	dir, err := os.UserCacheDir()

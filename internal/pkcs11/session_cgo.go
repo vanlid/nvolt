@@ -1,4 +1,4 @@
-//go:build wolfpkcs11_static && !pkcs11
+//go:build tpm_static && !pkcs11
 
 package pkcs11
 

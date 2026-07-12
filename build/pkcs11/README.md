@@ -4,23 +4,23 @@
 
 nvolt ships as three build-tag-selected variants. `internal/pkcs11` (and
 therefore `purego`, which needs `dlopen`/`LoadLibrary`) is compiled in only
-under `pkcs11` or `wolfpkcs11_static` — the default build never imports it.
+under `pkcs11` or `tpm_static` — the default build never imports it.
 
 | Variant | Build tag(s) | `CGO_ENABLED` | Static binary? | Software keys | External tokens (OpenSC/YubiKey) | TPM (wolfPKCS11) | How to build |
 |---|---|---|---|---|---|---|---|
 | **default** | *(none)* | `0` | Yes (Linux: fully static, `ldd` → "not a dynamic executable") | Yes | No — PKCS#11 code is stubbed out entirely | No | `make build` · `go install github.com/iluxav/nvolt/cmd/nvolt@latest` |
-| **pkcs11** | `pkcs11` (add `wolfpkcs11_embed` for the bundled TPM module) | `0` | No — `purego` requires a dynamic ELF/PE/Mach-O to `dlopen`/`LoadLibrary` | Yes | Yes | Yes, if built with `wolfpkcs11_embed` (needs `make module` first; Linux/Windows only, no TPM on darwin) | `go install -tags pkcs11 github.com/iluxav/nvolt/cmd/nvolt@latest` · `make build-pkcs11` (add `wolfpkcs11_embed` for the TPM module) |
-| **nvolt-tpm** | `wolfpkcs11_static` | `1` (musl) | Yes — fully static, wolfPKCS11 linked in directly (no `dlopen`) | Yes | No — this loader only exposes the linked-in TPM module | Yes | `make build-tpm` (Linux only; needs prebuilt static archives, not `go install`-able) → binary `nvolt-tpm` |
+| **pkcs11** | `pkcs11` (add `tpm_embed` for the bundled TPM module) | `0` | No — `purego` requires a dynamic ELF/PE/Mach-O to `dlopen`/`LoadLibrary` | Yes | Yes | Yes, if built with `tpm_embed` (needs `make module` first; Linux/Windows only, no TPM on darwin) | `go install -tags pkcs11 github.com/iluxav/nvolt/cmd/nvolt@latest` · `make build-pkcs11` (add `tpm_embed` for the TPM module) |
+| **nvolt-tpm-static** | `tpm_static` | `1` (musl) | Yes — fully static, wolfPKCS11 linked in directly (no `dlopen`) | Yes | No — this loader only exposes the linked-in TPM module | Yes | `make build-tpm` (Linux only; needs prebuilt static archives, not `go install`-able) → binary `nvolt-tpm-static` |
 
-`pkcs11` and `wolfpkcs11_static` are mutually exclusive; building with both
+`pkcs11` and `tpm_static` are mutually exclusive; building with both
 tags fails to compile (`internal/pkcs11/tags_guard.go`).
 
 ### Per-platform reachability
 
-| Platform | Fully-static build possible? | Dynamic `-tags pkcs11` reaches | Fully-static TPM (`nvolt-tpm`) |
+| Platform | Fully-static build possible? | Dynamic `-tags pkcs11` reaches | Fully-static TPM (`nvolt-tpm-static`) |
 |---|---|---|---|
-| **Linux** | Yes — the default build (`CGO_ENABLED=0`, no tags) is fully static | External tokens (OpenSC/YubiKey) + TPM (with `wolfpkcs11_embed`) | Yes — `wolfpkcs11_static`/musl, TPM only |
-| **Windows** | N/A — no fully-static concept; `LoadLibrary` is always available, so there's no static/dlopen tension to resolve | External tokens + TPM (with `wolfpkcs11_embed`) | Not built — unnecessary, the dynamic build already reaches everything |
+| **Linux** | Yes — the default build (`CGO_ENABLED=0`, no tags) is fully static | External tokens (OpenSC/YubiKey) + TPM (with `tpm_embed`) | Yes — `tpm_static`/musl, TPM only |
+| **Windows** | N/A — no fully-static concept; `LoadLibrary` is always available, so there's no static/dlopen tension to resolve | External tokens + TPM (with `tpm_embed`) | Not built — unnecessary, the dynamic build already reaches everything |
 | **macOS** | N/A — dyld can't statically link libSystem, so there's no fully-static build at all | External tokens only | Not built — macOS has no TPM 2.0 (Secure Enclave is ECC-only, not a PKCS#11 provider) |
 
 ### Hard rules
@@ -36,7 +36,7 @@ tags fails to compile (`internal/pkcs11/tags_guard.go`).
   dynamic `-tags pkcs11` build, for external tokens.
 - **External tokens (OpenSC/YubiKey) are always the dynamic `-tags pkcs11`
   path.** They are never statically linked; static linking is exclusive to
-  the wolfPKCS11-only `nvolt-tpm` flavor.
+  the wolfPKCS11-only `nvolt-tpm-static` flavor.
 
 nvolt can talk to a TPM 2.0 through [wolfPKCS11](https://github.com/wolfSSL/wolfPKCS11),
 which routes PKCS#11 key operations down to the chip via
@@ -105,13 +105,13 @@ binary blob:
 build/pkcs11/build-module.sh
 
 # 2. Build nvolt WITH the embedded module:
-go build -tags "pkcs11 wolfpkcs11_embed" -o nvolt ./cmd/nvolt
+go build -tags "pkcs11 tpm_embed" -o nvolt ./cmd/nvolt
 #   or: make build-embedded
 ```
 
 - **Default builds** (`go build ./...`, CI, `go test`) use a stub — no blob
   required, binary stays lean, everything stays cgo-free.
-- **`-tags "pkcs11 wolfpkcs11_embed"`** compiles the ~1.1 MB module into the binary.
+- **`-tags "pkcs11 tpm_embed"`** compiles the ~1.1 MB module into the binary.
 
 When compiled in, the built-in module appears as a **discovered option** like any
 external one — `DetectModules` lists it, so `nvolt pkcs11 list` (and the enroll
