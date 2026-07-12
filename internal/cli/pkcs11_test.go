@@ -65,7 +65,7 @@ func TestPKCS11ListShowsKeys(t *testing.T) {
 // (which made a real card indistinguishable from "no card detected").
 func TestPrintTokenListingShowsEmptyTokenWithGenerateHint(t *testing.T) {
 	out, err := captureStdout(func() error {
-		printTokenListing(pkcs11.TokenListing{Label: "PIV_II"})
+		printTokenListing(pkcs11.TokenListing{Label: "PIV_II"}, "embedded")
 		return nil
 	})
 	if err != nil {
@@ -77,7 +77,7 @@ func TestPrintTokenListingShowsEmptyTokenWithGenerateHint(t *testing.T) {
 	if !strings.Contains(out, "No RSA key yet") {
 		t.Fatalf("expected a 'no RSA key yet' hint in output:\n%s", out)
 	}
-	if !strings.Contains(out, "nvolt pkcs11 generate --token PIV_II") {
+	if !strings.Contains(out, "nvolt pkcs11 generate --pkcs11-module embedded --token PIV_II") {
 		t.Fatalf("expected the generate command naming the token in output:\n%s", out)
 	}
 }
@@ -97,7 +97,7 @@ func TestPrintTokenListingShowsKeysWhenPresent(t *testing.T) {
 	ui.SetLevel(ui.LevelInfo)
 	defer ui.SetLevel(ui.LevelInfo)
 	out, err := captureStdout(func() error {
-		printTokenListing(tok)
+		printTokenListing(tok, "embedded")
 		return nil
 	})
 	if err != nil {
@@ -115,7 +115,7 @@ func TestPrintTokenListingShowsKeysWhenPresent(t *testing.T) {
 
 	ui.SetLevel(ui.LevelVerbose)
 	vout, err := captureStdout(func() error {
-		printTokenListing(tok)
+		printTokenListing(tok, "embedded")
 		return nil
 	})
 	if err != nil {

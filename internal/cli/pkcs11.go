@@ -136,7 +136,7 @@ func runPKCS11List(module string) error {
 
 	ui.Section(fmt.Sprintf("Tokens (%d):", len(tokens)))
 	for _, tok := range tokens {
-		printTokenListing(tok)
+		printTokenListing(tok, module)
 	}
 
 	return nil
@@ -145,8 +145,12 @@ func runPKCS11List(module string) error {
 // printTokenListing renders one token's header, then either its RSA keys or
 // (when it has none yet) a short, actionable hint for creating one on that
 // exact token so the card/token is always visibly detected, never silently
-// indistinguishable from "no card present".
-func printTokenListing(tok pkcs11.TokenListing) {
+// indistinguishable from "no card present". module is the path this token was
+// discovered on (e.g. the "embedded" sentinel for the built-in wolfPKCS11
+// module); it is baked into the generate hint so the command targets the right
+// provider — generate's own module resolution otherwise silently defaults to a
+// single installed module (often OpenSC) and would miss this token.
+func printTokenListing(tok pkcs11.TokenListing, module string) {
 	// ui.PrintKeyValue -> ui.Info double-formats (see enrollPKCS11Machine/
 	// runPKCS11Generate below): any "%" in card-derived token/key labels
 	// gets reinterpreted as a format verb on the second pass. Escape
@@ -159,7 +163,7 @@ func printTokenListing(tok pkcs11.TokenListing) {
 		// argument: escaping it would print a literal "%%" in the command
 		// example instead of "%".
 		ui.Info("    No RSA key yet. Create one on the card with:")
-		ui.Info("      nvolt pkcs11 generate --token %s --label nvolt --id 03 --bits 2048", tok.Label)
+		ui.Info("      nvolt pkcs11 generate --pkcs11-module %s --token %s --label nvolt --id 03 --bits 2048", module, tok.Label)
 		ui.Info("    (On a YubiKey you can instead use: ykman piv keys generate --algorithm RSA2048 9d pub.pem")
 		ui.Info("     && ykman piv certificates generate --subject \"CN=nvolt\" 9d pub.pem)")
 		fmt.Println()
