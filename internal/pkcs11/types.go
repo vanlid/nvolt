@@ -133,3 +133,23 @@ func ckrvName(r CKRV) string {
 	}
 	return fmt.Sprintf("CKR_0x%08X", uintptr(r))
 }
+
+// KeyInfo describes an RSA key discovered on a token. Discovery runs without a
+// PIN, so on tokens that hide private objects until login (e.g. SoftHSM) the
+// data is read from the matching public-key object, which shares the same
+// CKA_ID/CKA_LABEL and modulus.
+type KeyInfo struct {
+	TokenLabel string
+	Label      string
+	ID         []byte
+	Bits       int
+}
+
+// TokenListing describes one token seen by ListTokensAndKeys: the token's
+// label and whatever RSA keys are visible on it without a PIN. Keys is empty
+// (not omitted) for a token that has no RSA keys yet, so callers can render
+// the token as detected while pointing the user at how to create one.
+type TokenListing struct {
+	Label string
+	Keys  []KeyInfo
+}

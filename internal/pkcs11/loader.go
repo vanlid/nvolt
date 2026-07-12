@@ -1,3 +1,5 @@
+//go:build pkcs11
+
 // Package pkcs11 is a minimal, cgo-free PKCS#11 (Cryptoki 2.40) client built on
 // purego. It implements only the calls nvolt needs.
 package pkcs11

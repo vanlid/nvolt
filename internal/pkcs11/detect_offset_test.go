@@ -1,3 +1,5 @@
+//go:build pkcs11
+
 package pkcs11
 
 import (
