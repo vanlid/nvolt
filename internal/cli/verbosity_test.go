@@ -1,3 +1,5 @@
+//go:build pkcs11 || wolfpkcs11_static
+
 package cli
 
 import (
@@ -330,63 +332,7 @@ func TestRebindToHardwareVerboseShowsModuleFingerprint(t *testing.T) {
 	}
 }
 
-// TestMachineAddExternalSourceVerboseShowsFingerprintSource drives
-// runMachineAdd's --pubkey external-source path and proves the default
-// (Info) output is just "Registered <id>" plus the grant hint, while the
-// Fingerprint and source (pubkey file path) only appear at Verbose. No
-// PKCS#11 hardware is needed for the --pubkey source.
-func TestMachineAddExternalSourceVerboseShowsFingerprintSource(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	vaultDir := t.TempDir()
-	t.Chdir(vaultDir)
-
-	vaultPath := filepath.Join(vaultDir, ".nvolt")
-	if err := vault.InitializeVaultDirectory(vaultPath); err != nil {
-		t.Fatalf("InitializeVaultDirectory: %v", err)
-	}
-
-	priv, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pubPEM, err := nvcrypto.EncodePublicKeyPEM(&priv.PublicKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pubPath := filepath.Join(t.TempDir(), "pub.pem")
-	if err := os.WriteFile(pubPath, pubPEM, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	ui.SetLevel(ui.LevelInfo)
-	defer ui.SetLevel(ui.LevelInfo)
-	out, err := captureStdout(func() error {
-		return runMachineAdd("ext-machine-info", machineAddSource{pubkeyFile: pubPath})
-	})
-	if err != nil {
-		t.Fatalf("runMachineAdd: %v\noutput:\n%s", err, out)
-	}
-	if !strings.Contains(out, "Registered") {
-		t.Fatalf("expected the registration line at Info level:\n%s", out)
-	}
-	if strings.Contains(out, "Fingerprint") {
-		t.Fatalf("default (Info) machine add output leaked the fingerprint:\n%s", out)
-	}
-	if strings.Contains(out, pubPath) {
-		t.Fatalf("default (Info) machine add output leaked the pubkey source path:\n%s", out)
-	}
-
-	ui.SetLevel(ui.LevelVerbose)
-	vout, err := captureStdout(func() error {
-		return runMachineAdd("ext-machine-verbose", machineAddSource{pubkeyFile: pubPath})
-	})
-	if err != nil {
-		t.Fatalf("runMachineAdd (verbose): %v\noutput:\n%s", err, vout)
-	}
-	if !strings.Contains(vout, "Fingerprint") {
-		t.Fatalf("expected the fingerprint at Verbose level:\n%s", vout)
-	}
-	if !strings.Contains(vout, pubPath) {
-		t.Fatalf("expected the pubkey source path at Verbose level:\n%s", vout)
-	}
-}
+// TestMachineAddExternalSourceVerboseShowsFingerprintSource moved to
+// machine_test.go: it exercises runMachineAdd's --pubkey path only (no
+// PKCS#11 hardware involved), so it stays covered in the default
+// (non-pkcs11) build alongside this file's other tag-gated tests.
