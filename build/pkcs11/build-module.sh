@@ -100,19 +100,29 @@ log "wolfSSL $WOLFSSL_TAG (single-threaded static; --enable-singlethreaded keeps
 git clone --depth 1 --branch "$WOLFSSL_TAG" https://github.com/wolfSSL/wolfssl.git "$WORK/wolfssl"
 cd "$WORK/wolfssl"
 ./autogen.sh
-# The Windows cross toolchains (mingw gcc, llvm-mingw clang) hit wolfSSL
-# portability warnings promoted to errors — getpid() undeclared in random.c
-# (-Werror=implicit-function-declaration) and -Wmissing-format-attribute in
-# types.h. wolfSSL has NO --disable-werror (passing it aborts configure), and it
-# injects its -Werror into AM_CFLAGS, which precedes C_EXTRA_FLAGS. automake
-# composes the compile line as "$(AM_CFLAGS) $(CFLAGS)", so the suppressions go
-# in CFLAGS to land LAST and win. These -Wno-* are no-ops on Linux (getpid is
-# declared there); -g -O2 preserves the autoconf default we're overriding.
+# wolfSSL portability fixes for the hardest cross / musl targets:
+#  - Windows (mingw gcc, llvm-mingw clang): random.c calls getpid() without
+#    including a header, giving implicit-declaration / nested-extern errors.
+#    -include unistd.h supplies the declaration; it resolves from each compiler's
+#    OWN sysroot, so it's safe across every target (mingw, musl, glibc).
+#  - Native musl aarch64: cpuid.c includes <asm/hwcap.h>, a kernel header
+#    musl-gcc doesn't expose. For NATIVE builds only (empty --host) add the host
+#    kernel headers as an idirafter fallback (musl's own headers still win);
+#    never for cross builds, where the host /usr/include is the wrong arch.
+# wolfSSL has NO --disable-werror (passing it aborts configure) and injects its
+# -Werror into AM_CFLAGS, which precedes C_EXTRA_FLAGS; automake composes
+# "$(AM_CFLAGS) $(CFLAGS)", so the -Wno-* go in CFLAGS to land LAST and win.
+# -g -O2 preserves the autoconf default we're overriding.
+WOLF_CFLAGS="-g -O2 -include unistd.h -Wno-error -Wno-implicit-function-declaration -Wno-nested-externs -Wno-missing-format-attribute"
+if [ -z "$HOST_TRIPLE" ]; then
+  MULTIARCH=$(gcc -print-multiarch 2>/dev/null || true)
+  WOLF_CFLAGS="$WOLF_CFLAGS -idirafter /usr/include${MULTIARCH:+ -idirafter /usr/include/$MULTIARCH}"
+fi
 ./configure $HOST_FLAG --prefix="$PREFIX" --enable-static --disable-shared --enable-singlethreaded \
   --disable-examples --disable-crypttests \
   --enable-aescfb --enable-rsapss --enable-keygen --enable-pwdbased \
   --enable-scrypt --enable-cryptocb \
-  CFLAGS="-g -O2 -Wno-error -Wno-implicit-function-declaration -Wno-nested-externs -Wno-missing-format-attribute" \
+  CFLAGS="$WOLF_CFLAGS" \
   C_EXTRA_FLAGS="-fPIC -DWOLFSSL_PUBLIC_MP -DWC_RSA_DIRECT -DHAVE_AES_ECB -DHAVE_AES_KEYWRAP"
 make -j"$JOBS"
 make install

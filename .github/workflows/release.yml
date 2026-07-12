@@ -335,6 +335,12 @@ jobs:
   github-release:
     name: Publish binaries to GitHub Releases
     needs: [version, build]
+    # Best-effort: publish whatever variants built, even if some matrix jobs
+    # failed (a hard cross-target can flake without blocking the rest). Runs for
+    # every channel — dev, rc, and stable -p11 — as long as the version job
+    # succeeded; failed variants simply upload no artifact and are omitted, and a
+    # later re-run adds them once fixed.
+    if: ${{ always() && needs.version.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
