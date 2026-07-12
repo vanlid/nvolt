@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"bytes"
 	"crypto/rsa"
 	"encoding/hex"
 	"fmt"
@@ -163,7 +164,7 @@ func printTokenListing(tok pkcs11.TokenListing, module string) {
 		// argument: escaping it would print a literal "%%" in the command
 		// example instead of "%".
 		ui.Info("    No RSA key yet. Create one on the card with:")
-		ui.Info("      nvolt pkcs11 generate --pkcs11-module %s --token %s --label nvolt --id 03 --bits 2048", module, tok.Label)
+		ui.Info("      nvolt pkcs11 generate --pkcs11-module %s --token %s", module, tok.Label)
 		ui.Info("    (On a YubiKey you can instead use: ykman piv keys generate --algorithm RSA2048 9d pub.pem")
 		ui.Info("     && ykman piv certificates generate --subject \"CN=nvolt\" 9d pub.pem)")
 		fmt.Println()
@@ -314,7 +315,12 @@ func isInteractive() bool {
 // with no TTY required. Only what is left unspecified falls back to
 // autodetection/interactive selection, and the URI wizard only ever runs when
 // stdin is a terminal.
-func resolveEnrollTarget(flagModule, flagURI string) (module, uri string, err error) {
+// identityPub, when non-nil (the rebind path), pins the wizard to the machine's
+// existing identity public key: only on-card keys whose public half matches are
+// offered, so rebind can never point the machine at a different key. It is nil
+// for a fresh enrollment (init/join/machine add), where every key is a valid
+// choice.
+func resolveEnrollTarget(flagModule, flagURI string, identityPub *rsa.PublicKey) (module, uri string, err error) {
 	module, err = resolveEnrollModule(flagModule)
 	if err != nil {
 		return "", "", err
@@ -324,7 +330,7 @@ func resolveEnrollTarget(flagModule, flagURI string) (module, uri string, err er
 		return module, flagURI, nil
 	}
 
-	uri, err = resolveEnrollURI(module)
+	uri, err = resolveEnrollURI(module, identityPub)
 	if err != nil {
 		return "", "", err
 	}
@@ -378,7 +384,7 @@ func resolveEnrollModule(flagModule string) (string, error) {
 // keys visible on module, narrows to a token (prompting if more than one),
 // narrows to a key on that token (prompting if more than one), and builds the
 // pkcs11: URI for the selection.
-func resolveEnrollURI(module string) (string, error) {
+func resolveEnrollURI(module string, identityPub *rsa.PublicKey) (string, error) {
 	if !isInteractive() {
 		return "", fmt.Errorf("no --pkcs11-uri given and not a terminal; pass --pkcs11-uri 'pkcs11:token=...;id=...'")
 	}
@@ -389,6 +395,27 @@ func resolveEnrollURI(module string) (string, error) {
 	}
 	if len(keys) == 0 {
 		return "", fmt.Errorf("no RSA keys found on %s", module)
+	}
+
+	// Rebind pins the choice to the machine's existing identity key: filter the
+	// listed keys to those whose on-card public key matches identityPub. Exactly
+	// one match auto-selects (no prompt); several narrow the wizard to only the
+	// matches; zero keeps today's "no matching key on the token" behavior (with
+	// the import hint) instead of offering an unrelated key.
+	if identityPub != nil {
+		matches := filterKeysMatchingIdentity(module, keys, identityPub)
+		switch len(matches) {
+		case 0:
+			return "", fmt.Errorf("no key matching this machine's identity was found on %s; "+
+				"put your key on the card first (nvolt pkcs11 import --privkey <your-key.pem> --token <label>, "+
+				"or on a YubiKey: ykman piv keys import <slot> <your-key.pem>), then re-run", module)
+		case 1:
+			k := matches[0]
+			return fmt.Sprintf("pkcs11:token=%s;id=%s;type=private",
+				pctEncodePKCS11Attr(k.TokenLabel), pctEncodeID(k.ID)), nil
+		default:
+			keys = matches
+		}
 	}
 
 	tokenLabel, err := selectToken(keys)
@@ -410,6 +437,29 @@ func resolveEnrollURI(module string) (string, error) {
 
 	return fmt.Sprintf("pkcs11:token=%s;id=%s;type=private",
 		pctEncodePKCS11Attr(tokenLabel), pctEncodeID(key.ID)), nil
+}
+
+// filterKeysMatchingIdentity returns the subset of keys whose on-card public
+// key equals identityPub (via samePublicKey). It reads each candidate's public
+// key with ReadTokenPublicKey — no login needed, since public-key objects are
+// visible pre-login — building the same pkcs11: URI the wizard would. A key
+// whose public half can't be read is skipped: it can't be confirmed as the
+// identity key, and offering it would risk the very mismatch this filter
+// exists to prevent.
+func filterKeysMatchingIdentity(module string, keys []pkcs11.KeyInfo, identityPub *rsa.PublicKey) []pkcs11.KeyInfo {
+	var out []pkcs11.KeyInfo
+	for _, k := range keys {
+		uri := fmt.Sprintf("pkcs11:token=%s;id=%s;type=private",
+			pctEncodePKCS11Attr(k.TokenLabel), pctEncodeID(k.ID))
+		pub, err := ReadTokenPublicKey(module, uri)
+		if err != nil {
+			continue
+		}
+		if samePublicKey(pub, identityPub) {
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 // selectToken narrows keys to a single token label: the one label present, or
@@ -521,14 +571,20 @@ func runPKCS11Generate(module, token, label, idHex string, bits int, pinMode str
 		return fmt.Errorf("no PKCS#11 token specified; use --token")
 	}
 	if label == "" {
-		return fmt.Errorf("no key label specified; use --label")
+		label = "nvolt"
 	}
-	id, err := hex.DecodeString(idHex)
-	if err != nil {
-		return fmt.Errorf("invalid --id (must be hex, e.g. 03): %w", err)
-	}
-	if len(id) == 0 {
-		return fmt.Errorf("no key id specified; use --id (hex, e.g. 03)")
+	// An explicit --id must be valid, non-empty hex. An omitted --id (idHex == "")
+	// is auto-picked from the token's free id space once we can see its keys.
+	var explicitID []byte
+	if idHex != "" {
+		decoded, derr := hex.DecodeString(idHex)
+		if derr != nil {
+			return fmt.Errorf("invalid --id (must be hex, e.g. 03): %w", derr)
+		}
+		if len(decoded) == 0 {
+			return fmt.Errorf("invalid --id: decodes to empty; omit --id to auto-assign, or pass hex like 03")
+		}
+		explicitID = decoded
 	}
 	if bits < 2048 {
 		return fmt.Errorf("--bits must be at least 2048 (got %d)", bits)
@@ -540,39 +596,99 @@ func runPKCS11Generate(module, token, label, idHex string, bits int, pinMode str
 	}
 	defer func() { _ = m.Close() }()
 
+	pin, err := pinentry.Read(pinMode)
+	if err != nil {
+		return fmt.Errorf("failed to obtain PIN: %w", err)
+	}
+
+	// Auto-initialize a blank token (never initialized, or no user PIN yet) so a
+	// fresh card is usable in one step. A token that is already live is left
+	// untouched — its keys are never wiped (see EnsureTokenInitialized). Done
+	// before opening the working session, since C_InitToken requires no open
+	// session on the token.
+	if _, err := m.EnsureTokenInitialized(token, pin, func() {
+		ui.Info("Initializing fresh PKCS#11 token %q…", token)
+	}); err != nil {
+		return fmt.Errorf("failed to initialize token %q: %w", token, err)
+	}
+
 	sess, err := m.OpenSessionRW(token)
 	if err != nil {
 		return fmt.Errorf("failed to open session on token %q: %w", token, err)
 	}
 	defer func() { _ = sess.Close() }()
 
-	pin, err := pinentry.Read(pinMode)
-	if err != nil {
-		return fmt.Errorf("failed to obtain PIN: %w", err)
-	}
 	if pin != "" {
 		if err := sess.Login(pin); err != nil {
 			return fmt.Errorf("failed to log in: %w", err)
 		}
 	}
 
+	// Resolve the key id: honor an explicit --id (rejecting a collision with an
+	// existing key), or auto-pick the lowest unused single-byte id on the token.
+	existing := sess.ListKeyIDs()
+	id := explicitID
+	if id == nil {
+		id = nextFreeKeyID(existing)
+		idHex = hex.EncodeToString(id)
+	} else if containsID(existing, id) {
+		return fmt.Errorf("a key with id %s already exists on token %q; pass a different --id", idHex, token)
+	}
+
 	if _, err := sess.GenerateRSAKeyPair(label, id, bits); err != nil {
 		return fmt.Errorf("failed to generate RSA keypair: %w", err)
 	}
 
-	// ui.Success -> ui.Info double-formats (Success's own Sprintf embeds its
-	// args, then Info re-parses the result as a format string with none): any
-	// "%" in the user-supplied token gets reinterpreted as a format verb on
-	// the second pass, so escape "%" -> "%%" on it here. ui.Verbose below is a
-	// single-pass Printf, so Label/ID need no such escaping when passed as
-	// %s/%x arguments.
-	ui.Success("RSA-%d keypair created on-card on token %s (private key non-exportable)",
-		bits, strings.ReplaceAll(token, "%", "%%"))
-	ui.Verbose("  Label: %s", label)
-	ui.Verbose("  ID: %x", id)
+	// Headline via ui.Success, which double-formats (Sprintf then Info re-parses),
+	// so the user-controlled token/label are "%"->"%%" escaped; idHex is hex-only
+	// and bits an int, so both are safe unescaped.
+	ui.Success("Created RSA-%d key  label=%s  id=%s  on token %s",
+		bits,
+		strings.ReplaceAll(label, "%", "%%"),
+		idHex,
+		strings.ReplaceAll(token, "%", "%%"))
+
+	// Point the user at how to adopt this exact key as the machine identity.
+	// ui.Info is single-pass Printf (format+args), so module and the "%"-bearing
+	// pkcs11 URI survive literally as %s arguments with no escaping.
+	uri := fmt.Sprintf("pkcs11:token=%s;id=%s;type=private",
+		pctEncodePKCS11Attr(token), pctEncodeID(id))
+	ui.Info("Use this key as this machine's identity:")
+	ui.Info("  nvolt init --pkcs11 --pkcs11-module %s --pkcs11-uri '%s'", module, uri)
+
 	ui.Verbose("  Bits: %d", bits)
 
 	return nil
+}
+
+// containsID reports whether id appears in ids (exact byte-equality).
+func containsID(ids [][]byte, id []byte) bool {
+	for _, x := range ids {
+		if bytes.Equal(x, id) {
+			return true
+		}
+	}
+	return false
+}
+
+// nextFreeKeyID picks the lowest unused single-byte CKA_ID starting at 0x01,
+// given the ids already on the token: a fresh token yields 0x01, a second key
+// 0x02, and so on. Multi-byte ids don't constrain the single-byte space, so they
+// are ignored. If all 255 single-byte ids are taken (pathological), it falls
+// back to 0x01 (GenerateRSAKeyPair then surfaces any real collision).
+func nextFreeKeyID(existing [][]byte) []byte {
+	used := map[byte]bool{}
+	for _, id := range existing {
+		if len(id) == 1 {
+			used[id[0]] = true
+		}
+	}
+	for b := 1; b <= 0xff; b++ {
+		if !used[byte(b)] {
+			return []byte{byte(b)}
+		}
+	}
+	return []byte{0x01}
 }
 
 var pkcs11ImportCmd = &cobra.Command{
@@ -622,16 +738,26 @@ func runPKCS11Import(module, token, label, idHex, keyFile, pinMode string) error
 	}
 	defer func() { _ = m.Close() }()
 
+	pin, err := pinentry.Read(pinMode)
+	if err != nil {
+		return fmt.Errorf("failed to obtain PIN: %w", err)
+	}
+
+	// Auto-initialize a blank token before importing, mirroring generate; a live
+	// token is left untouched. Done before opening the working session because
+	// C_InitToken requires no session open on the token.
+	if _, err := m.EnsureTokenInitialized(token, pin, func() {
+		ui.Info("Initializing fresh PKCS#11 token %q…", token)
+	}); err != nil {
+		return fmt.Errorf("failed to initialize token %q: %w", token, err)
+	}
+
 	sess, err := m.OpenSessionRW(token)
 	if err != nil {
 		return fmt.Errorf("failed to open session on token %q: %w", token, err)
 	}
 	defer func() { _ = sess.Close() }()
 
-	pin, err := pinentry.Read(pinMode)
-	if err != nil {
-		return fmt.Errorf("failed to obtain PIN: %w", err)
-	}
 	if pin != "" {
 		if err := sess.Login(pin); err != nil {
 			return fmt.Errorf("failed to log in: %w", err)
@@ -659,13 +785,11 @@ func init() {
 	pkcs11Cmd.AddCommand(pkcs11GenerateCmd)
 	pkcs11GenerateCmd.Flags().StringVar(&pkcs11GenModule, "pkcs11-module", "", "Path to PKCS#11 module (.so); autodetected if omitted")
 	pkcs11GenerateCmd.Flags().StringVar(&pkcs11GenToken, "token", "", "Token label to generate the key on (required)")
-	pkcs11GenerateCmd.Flags().StringVar(&pkcs11GenLabel, "label", "", "CKA_LABEL for the new key (required)")
-	pkcs11GenerateCmd.Flags().StringVar(&pkcs11GenID, "id", "", "CKA_ID for the new key, hex (e.g. 03) (required)")
+	pkcs11GenerateCmd.Flags().StringVar(&pkcs11GenLabel, "label", "nvolt", "CKA_LABEL for the new key")
+	pkcs11GenerateCmd.Flags().StringVar(&pkcs11GenID, "id", "", "CKA_ID for the new key, hex (e.g. 03); auto-assigned (next free id) if omitted")
 	pkcs11GenerateCmd.Flags().IntVar(&pkcs11GenBits, "bits", 2048, "RSA modulus size in bits")
 	pkcs11GenerateCmd.Flags().StringVar(&pkcs11GenPinMode, "pkcs11-pin-mode", "prompt", "How to obtain the PIN: prompt, env, or none")
 	_ = pkcs11GenerateCmd.MarkFlagRequired("token")
-	_ = pkcs11GenerateCmd.MarkFlagRequired("label")
-	_ = pkcs11GenerateCmd.MarkFlagRequired("id")
 
 	pkcs11Cmd.AddCommand(pkcs11ImportCmd)
 	pkcs11ImportCmd.Flags().StringVar(&pkcs11ImportModule, "pkcs11-module", "", "Path to PKCS#11 module (.so); autodetected if omitted")

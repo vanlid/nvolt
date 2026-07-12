@@ -20,6 +20,8 @@ const (
 	idxGetFunctionList   = 3  // C_GetFunctionList
 	idxGetSlotList       = 4  // C_GetSlotList
 	idxGetTokenInfo      = 6  // C_GetTokenInfo
+	idxInitToken         = 9  // C_InitToken
+	idxInitPIN           = 10 // C_InitPIN
 	idxOpenSession       = 12 // C_OpenSession
 	idxCloseSession      = 13 // C_CloseSession
 	idxLogin             = 18 // C_Login

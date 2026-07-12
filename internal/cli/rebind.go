@@ -65,7 +65,7 @@ func runRebind() error {
 }
 
 func rebindToHardware(mi *types.MachineInfo, identityPub *rsa.PublicKey, homePaths *vault.HomePaths) error {
-	module, uri, err := resolveEnrollTarget(rebindModule, rebindURI)
+	module, uri, err := resolveEnrollTarget(rebindModule, rebindURI, identityPub)
 	if err != nil {
 		return err
 	}

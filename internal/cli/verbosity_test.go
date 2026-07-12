@@ -158,11 +158,13 @@ func TestEnrollPKCS11MachineVerboseShowsModuleURIFingerprint(t *testing.T) {
 	}
 }
 
-// TestPKCS11GenerateVerboseShowsLabelIDBits drives runPKCS11Generate against a
-// real SoftHSM fixture token and proves the default (Info) output is the
-// one-line success naming the token, while Label/ID/Bits detail only appears
-// at Verbose. Skipped unless NVOLT_TEST_PKCS11_MODULE is set.
-func TestPKCS11GenerateVerboseShowsLabelIDBits(t *testing.T) {
+// TestPKCS11GenerateShowsChosenKeyAndNextStep drives runPKCS11Generate against
+// a real SoftHSM fixture token and proves the default (Info) output tells the
+// user exactly which key was created (label + id) and the copy-paste next step
+// to adopt it as the machine identity (the whole point of auto-assigning ids),
+// while purely technical detail (Bits) stays behind Verbose. Skipped unless
+// NVOLT_TEST_PKCS11_MODULE is set.
+func TestPKCS11GenerateShowsChosenKeyAndNextStep(t *testing.T) {
 	mod := hsmtest.Provision(t)
 	t.Setenv("NVOLT_PKCS11_PIN", hsmtest.PIN)
 
@@ -175,13 +177,24 @@ func TestPKCS11GenerateVerboseShowsLabelIDBits(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out, hsmtest.TokenLabel) {
-		t.Fatalf("expected the one-line success to name the token at Info level:\n%s", out)
+		t.Fatalf("expected the success line to name the token at Info level:\n%s", out)
 	}
-	if strings.Contains(out, "gen-key") {
-		t.Fatalf("default (Info) generate output leaked the key label:\n%s", out)
+	// The chosen label and id must be visible at the default level — the user
+	// needs to know what was created (especially the auto-assigned id).
+	if !strings.Contains(out, "label=gen-key") {
+		t.Fatalf("expected the chosen key label at Info level:\n%s", out)
 	}
-	if strings.Contains(out, "ID:") {
-		t.Fatalf("default (Info) generate output leaked the key ID:\n%s", out)
+	if !strings.Contains(out, "id=05") {
+		t.Fatalf("expected the chosen key id at Info level:\n%s", out)
+	}
+	// The next-step line must give the exact init command with the PKCS#11
+	// %-hex id (id 0x05 -> id=%05) so it can be copy-pasted.
+	if !strings.Contains(out, "nvolt init --pkcs11") || !strings.Contains(out, "id=%05") {
+		t.Fatalf("expected the copy-paste init next-step with id=%%05 at Info level:\n%s", out)
+	}
+	// Bits is technical detail: Verbose only.
+	if strings.Contains(out, "Bits:") {
+		t.Fatalf("default (Info) generate output leaked the Bits detail:\n%s", out)
 	}
 
 	ui.SetLevel(ui.LevelVerbose)
@@ -194,11 +207,53 @@ func TestPKCS11GenerateVerboseShowsLabelIDBits(t *testing.T) {
 	if !strings.Contains(vout, "gen-key-2") {
 		t.Fatalf("expected the key label at Verbose level:\n%s", vout)
 	}
-	if !strings.Contains(vout, "ID:") {
-		t.Fatalf("expected the key ID at Verbose level:\n%s", vout)
-	}
 	if !strings.Contains(vout, "Bits: 2048") {
 		t.Fatalf("expected the key bits at Verbose level:\n%s", vout)
+	}
+}
+
+// TestPKCS11GenerateAutoAssignsNextFreeID proves that omitting --id makes
+// generate pick the lowest unused single-byte CKA_ID on the token. The SoftHSM
+// fixture pre-seeds ids 01 and 02, so the first auto-assignment lands on 03.
+// Skipped unless NVOLT_TEST_PKCS11_MODULE is set.
+func TestPKCS11GenerateAutoAssignsNextFreeID(t *testing.T) {
+	mod := hsmtest.Provision(t)
+	t.Setenv("NVOLT_PKCS11_PIN", hsmtest.PIN)
+
+	ui.SetLevel(ui.LevelInfo)
+	defer ui.SetLevel(ui.LevelInfo)
+	out, err := captureStdout(func() error {
+		return runPKCS11Generate(mod, hsmtest.TokenLabel, "", "", 2048, "env")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Pre-seeded ids are 01 and 02, so the next free single-byte id is 03, and
+	// the label defaults to "nvolt".
+	if !strings.Contains(out, "id=03") {
+		t.Fatalf("expected auto-assigned id 03 (01/02 pre-seeded) at Info level:\n%s", out)
+	}
+	if !strings.Contains(out, "label=nvolt") {
+		t.Fatalf("expected the default label 'nvolt' at Info level:\n%s", out)
+	}
+	if !strings.Contains(out, "id=%03") {
+		t.Fatalf("expected the next-step URI to carry id=%%03:\n%s", out)
+	}
+}
+
+// TestPKCS11GenerateRejectsDuplicateExplicitID proves that an explicit --id
+// colliding with an existing key on the token is rejected (the SoftHSM fixture
+// pre-seeds id 01). Skipped unless NVOLT_TEST_PKCS11_MODULE is set.
+func TestPKCS11GenerateRejectsDuplicateExplicitID(t *testing.T) {
+	mod := hsmtest.Provision(t)
+	t.Setenv("NVOLT_PKCS11_PIN", hsmtest.PIN)
+
+	err := runPKCS11Generate(mod, hsmtest.TokenLabel, "dup", "01", 2048, "env")
+	if err == nil {
+		t.Fatal("expected an error generating a key with an already-used explicit id 01")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("expected an 'already exists' duplicate-id error, got: %v", err)
 	}
 }
 

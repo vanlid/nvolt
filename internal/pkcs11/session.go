@@ -88,6 +88,132 @@ func (m *Module) openSession(tokenLabel string, rw bool) (*Session, error) {
 	return &Session{m: m, handle: handle.get(), flags: tokenFlags}, nil
 }
 
+// EnsureTokenInitialized brings a blank/uninitialized token up so it can be
+// used, returning whether it actually had to initialize it. It is safe to call
+// unconditionally before using a token to create keys (generate/import): if the
+// token is already live (CKF_TOKEN_INITIALIZED and CKF_USER_PIN_INITIALIZED
+// both set) it does nothing and returns false, so an existing token's keys are
+// never touched. Otherwise it runs the standard Cryptoki bring-up:
+//
+//  1. C_InitToken(slot, soPin, label) — sets the SO PIN and labels the (blank)
+//     token. Reached only when tokenNeedsInit is true, so it never wipes a live
+//     token.
+//  2. open a RW session, C_Login(CKU_SO), C_InitPIN(userPin), C_Logout, close.
+//
+// nvolt's token is single-user / self-managed, so pin is used as BOTH the SO
+// PIN and the user PIN. An empty pin (pin_mode=none) initializes with an empty
+// user PIN, which wolfPKCS11 accepts. onInit, if non-nil, is invoked once — after
+// the token is detected as needing initialization but before any state changes —
+// so the caller (which owns the ui layer) can announce it; a live token never
+// calls it.
+func (m *Module) EnsureTokenInitialized(tokenLabel, pin string, onInit func()) (bool, error) {
+	if err := m.initialize(); err != nil {
+		return false, err
+	}
+	slot, flags, err := m.findSlot(tokenLabel)
+	if err != nil {
+		return false, err
+	}
+	if !tokenNeedsInit(flags) {
+		return false, nil
+	}
+	// A blank token can only be brought up when we have a PIN to set as its SO
+	// and user PIN: PKCS#11 (and wolfPKCS11 in particular, which returns
+	// CKR_ARGUMENTS_BAD) reject C_InitToken with an empty SO PIN. A no-PIN flow
+	// (pin_mode=none) never performs a user login anyway, so an uninitialized
+	// token is used as-is — exactly the pre-existing behavior.
+	if pin == "" {
+		return false, nil
+	}
+	if onInit != nil {
+		onInit()
+	}
+	if err := m.initToken(slot, tokenLabel, pin); err != nil {
+		return false, err
+	}
+	if err := m.initUserPIN(slot, pin); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// initToken calls C_InitToken(slot, soPin, label). Cryptoki requires the label
+// to be exactly 32 bytes, space-padded and NOT NUL-terminated. A blank soPin is
+// passed as a NULL pointer with zero length (avoids &pinB[0] on an empty slice).
+func (m *Module) initToken(slot uintptr, label, soPin string) error {
+	var lbl [32]byte
+	for i := range lbl {
+		lbl[i] = ' '
+	}
+	copy(lbl[:], label)
+	pinB := []byte(soPin)
+	var pinPtr uintptr
+	if len(pinB) > 0 {
+		pinPtr = uintptr(unsafe.Pointer(&pinB[0]))
+	}
+	rv, _, _ := purego.SyscallN(m.fn(idxInitToken), slot, pinPtr, uintptr(len(pinB)),
+		uintptr(unsafe.Pointer(&lbl[0])))
+	runtime.KeepAlive(pinB)
+	runtime.KeepAlive(&lbl)
+	if rvOf(rv) != CKR_OK {
+		return fmt.Errorf("C_InitToken: %s", rvOf(rv))
+	}
+	return nil
+}
+
+// initUserPIN opens a RW session on slot, logs in as the SO role, sets the
+// normal-user PIN via C_InitPIN, then logs out and closes the session. C_InitPIN
+// must be called on a session where the SO is logged in, and C_InitToken (the
+// caller's prior step) leaves no session open, so this opens its own.
+func (m *Module) initUserPIN(slot uintptr, pin string) error {
+	handle := newCKULongOut()
+	rv, _, _ := purego.SyscallN(m.fn(idxOpenSession), slot,
+		CKF_SERIAL_SESSION|CKF_RW_SESSION, 0, 0, uintptr(handle.ptr()))
+	runtime.KeepAlive(handle)
+	if rvOf(rv) != CKR_OK {
+		return fmt.Errorf("C_OpenSession (SO): %s", rvOf(rv))
+	}
+	sh := handle.get()
+	defer func() { _, _, _ = purego.SyscallN(m.fn(idxCloseSession), sh) }()
+
+	pinB := []byte(pin)
+	var pinPtr uintptr
+	if len(pinB) > 0 {
+		pinPtr = uintptr(unsafe.Pointer(&pinB[0]))
+	}
+	rv, _, _ = purego.SyscallN(m.fn(idxLogin), sh, CKU_SO, pinPtr, uintptr(len(pinB)))
+	runtime.KeepAlive(pinB)
+	if rvOf(rv) != CKR_OK {
+		return fmt.Errorf("C_Login (SO): %s", rvOf(rv))
+	}
+
+	rv, _, _ = purego.SyscallN(m.fn(idxInitPIN), sh, pinPtr, uintptr(len(pinB)))
+	runtime.KeepAlive(pinB)
+	if rvOf(rv) != CKR_OK {
+		return fmt.Errorf("C_InitPIN: %s", rvOf(rv))
+	}
+
+	if rv, _, _ = purego.SyscallN(m.fn(idxLogout), sh); rvOf(rv) != CKR_OK {
+		return fmt.Errorf("C_Logout: %s", rvOf(rv))
+	}
+	return nil
+}
+
+// ListKeyIDs returns the CKA_ID of every RSA key (public or private) visible on
+// the session's token, deduplicated by id. It is used before key generation to
+// auto-pick the next free id or reject a colliding explicit --id. On tokens that
+// hide private objects until login it still sees the public-key objects (which
+// carry the same CKA_ID), and the session should already be logged in for those
+// that hide both.
+func (s *Session) ListKeyIDs() [][]byte {
+	keys := s.listRSAKeysOnToken("")
+	ids := make([][]byte, 0, len(keys))
+	for _, k := range keys {
+		ids = append(ids, k.ID)
+	}
+	return ids
+}
+
 // findSlot returns the slot id and CK_TOKEN_INFO.flags of the token whose
 // label matches tokenLabel.
 func (m *Module) findSlot(tokenLabel string) (slotID, tokenFlags uintptr, err error) {

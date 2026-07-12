@@ -179,6 +179,116 @@ func (m *Module) findSlot(tokenLabel string) (C.CK_SLOT_ID, C.CK_FLAGS, error) {
 	return 0, 0, fmt.Errorf("no token with label %q", tokenLabel)
 }
 
+// EnsureTokenInitialized brings a blank/uninitialized token up so it can be
+// used, returning whether it actually had to initialize it. Mirrors the purego
+// build's method of the same name: if the token is already live
+// (CKF_TOKEN_INITIALIZED and CKF_USER_PIN_INITIALIZED both set) it does nothing
+// and returns false (never wiping an existing token's keys); otherwise it runs
+// C_InitToken(slot, soPin, label) then, in a fresh RW session, C_Login(CKU_SO) +
+// C_InitPIN(userPin) + C_Logout. pin is used as BOTH the SO and user PIN
+// (single-user token); an empty pin initializes with an empty user PIN. onInit,
+// if non-nil, is invoked once after detecting the token needs init but before
+// any state changes, so the ui-owning caller can announce it.
+func (m *Module) EnsureTokenInitialized(tokenLabel, pin string, onInit func()) (bool, error) {
+	if err := m.initialize(); err != nil {
+		return false, err
+	}
+	slot, flags, err := m.findSlot(tokenLabel)
+	if err != nil {
+		return false, err
+	}
+	if !tokenNeedsInit(uintptr(flags)) {
+		return false, nil
+	}
+	// A blank token can only be brought up when we have a PIN to set as its SO
+	// and user PIN: PKCS#11 (and wolfPKCS11 in particular, which returns
+	// CKR_ARGUMENTS_BAD) reject C_InitToken with an empty SO PIN. A no-PIN flow
+	// (pin_mode=none) never performs a user login anyway, so an uninitialized
+	// token is used as-is — exactly the pre-existing behavior.
+	if pin == "" {
+		return false, nil
+	}
+	if onInit != nil {
+		onInit()
+	}
+	if err := m.initToken(slot, tokenLabel, pin); err != nil {
+		return false, err
+	}
+	return true, m.initUserPIN(slot, pin)
+}
+
+// pinArg returns a (CK_UTF8CHAR_PTR, length) pair pointing into b, yielding a
+// NULL pointer / zero length for an empty PIN (so C_InitToken/C_InitPIN/C_Login
+// get a real NULL rather than &b[0] on an empty slice). The caller owns b and
+// must runtime.KeepAlive it across the C call, since the returned pointer aliases
+// its backing array.
+func pinArg(b []byte) (C.CK_UTF8CHAR_PTR, C.CK_ULONG) {
+	if len(b) == 0 {
+		return nil, 0
+	}
+	return (C.CK_UTF8CHAR_PTR)(unsafe.Pointer(&b[0])), C.CK_ULONG(len(b))
+}
+
+// initToken calls C_InitToken(slot, soPin, label) with a 32-byte, space-padded,
+// non-NUL-terminated label as Cryptoki requires.
+func (m *Module) initToken(slot C.CK_SLOT_ID, label, soPin string) error {
+	var lbl [32]C.CK_UTF8CHAR
+	for i := range lbl {
+		lbl[i] = C.CK_UTF8CHAR(' ')
+	}
+	lb := []byte(label)
+	for i := 0; i < len(lb) && i < len(lbl); i++ {
+		lbl[i] = C.CK_UTF8CHAR(lb[i])
+	}
+	b := []byte(soPin)
+	pinPtr, pinLen := pinArg(b)
+	rv := C.C_InitToken(slot, pinPtr, pinLen, (C.CK_UTF8CHAR_PTR)(unsafe.Pointer(&lbl[0])))
+	runtime.KeepAlive(b)
+	runtime.KeepAlive(&lbl)
+	if rv != C.CKR_OK {
+		return fmt.Errorf("C_InitToken: %s", rvStr(rv))
+	}
+	return nil
+}
+
+// initUserPIN opens a RW session on slot, logs in as SO, sets the normal-user
+// PIN via C_InitPIN, then logs out and closes.
+func (m *Module) initUserPIN(slot C.CK_SLOT_ID, pin string) error {
+	var handle C.CK_SESSION_HANDLE
+	if rv := C.C_OpenSession(slot, C.CKF_SERIAL_SESSION|C.CKF_RW_SESSION, nil, nil, &handle); rv != C.CKR_OK {
+		return fmt.Errorf("C_OpenSession (SO): %s", rvStr(rv))
+	}
+	defer C.C_CloseSession(handle)
+
+	b := []byte(pin)
+	pinPtr, pinLen := pinArg(b)
+	if rv := C.C_Login(handle, C.CKU_SO, pinPtr, pinLen); rv != C.CKR_OK {
+		runtime.KeepAlive(b)
+		return fmt.Errorf("C_Login (SO): %s", rvStr(rv))
+	}
+	if rv := C.C_InitPIN(handle, pinPtr, pinLen); rv != C.CKR_OK {
+		runtime.KeepAlive(b)
+		return fmt.Errorf("C_InitPIN: %s", rvStr(rv))
+	}
+	runtime.KeepAlive(b)
+	if rv := C.C_Logout(handle); rv != C.CKR_OK {
+		return fmt.Errorf("C_Logout: %s", rvStr(rv))
+	}
+	return nil
+}
+
+// ListKeyIDs returns the CKA_ID of every RSA key (public or private) visible on
+// the session's token, deduplicated by id. Used before key generation to
+// auto-pick the next free id or reject a colliding explicit --id.
+func (s *Session) ListKeyIDs() [][]byte {
+	keys := s.listRSAKeysOnToken("")
+	ids := make([][]byte, 0, len(keys))
+	for _, k := range keys {
+		ids = append(ids, k.ID)
+	}
+	return ids
+}
+
 // tokenLabel reads the space-trimmed CKA label from a slot's CK_TOKEN_INFO.
 func (m *Module) tokenLabel(slot C.CK_SLOT_ID) (string, error) {
 	var info C.CK_TOKEN_INFO

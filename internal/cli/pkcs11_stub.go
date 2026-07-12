@@ -28,7 +28,7 @@ func errNoPKCS11() error {
 // helper of the same name: init/join/rebind/machine all call it to resolve
 // the module/URI to enroll or rebind against, but with no PKCS#11 loader
 // compiled in there is nothing to resolve.
-func resolveEnrollTarget(_, _ string) (module, uri string, err error) {
+func resolveEnrollTarget(_, _ string, _ *rsa.PublicKey) (module, uri string, err error) {
 	return "", "", errNoPKCS11()
 }
 

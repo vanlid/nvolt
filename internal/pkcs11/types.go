@@ -30,6 +30,7 @@ const (
 	CKK_RSA            uintptr = 0
 	CKF_RW_SESSION     uintptr = 2
 	CKF_SERIAL_SESSION uintptr = 4
+	CKU_SO             uintptr = 0
 	CKU_USER           uintptr = 1
 	CKM_RSA_PKCS_OAEP  uintptr = 0x00000009
 	CKM_RSA_X_509      uintptr = 0x00000003
@@ -49,6 +50,27 @@ const (
 	CKF_LOGIN_REQUIRED                uintptr = 0x00000004
 	CKF_PROTECTED_AUTHENTICATION_PATH uintptr = 0x00000100
 )
+
+// CK_TOKEN_INFO.flags bits (Cryptoki 2.40 §9.5.1) that drive blank-token
+// auto-initialization: CKF_TOKEN_INITIALIZED is set once the token has been
+// initialized (C_InitToken run), and CKF_USER_PIN_INITIALIZED is set once the
+// normal-user PIN has been established (C_InitPIN run). A token missing either
+// makes C_Login(CKU_USER) fail with CKR_USER_PIN_NOT_INITIALIZED, so nvolt
+// brings it up transparently before use (see Module.EnsureTokenInitialized).
+const (
+	CKF_TOKEN_INITIALIZED    uintptr = 0x00000400
+	CKF_USER_PIN_INITIALIZED uintptr = 0x00000008
+)
+
+// tokenNeedsInit reports whether a token's CK_TOKEN_INFO.flags indicate it must
+// be initialized before it can be used to create or use keys: either the token
+// itself has never been initialized (CKF_TOKEN_INITIALIZED clear) or its
+// normal-user PIN has never been set (CKF_USER_PIN_INITIALIZED clear). When
+// both bits are set the token is already live and must NEVER be re-initialized
+// (C_InitToken would wipe every key on it), so this returns false.
+func tokenNeedsInit(flags uintptr) bool {
+	return flags&CKF_TOKEN_INITIALIZED == 0 || flags&CKF_USER_PIN_INITIALIZED == 0
+}
 
 // Attribute types.
 const (

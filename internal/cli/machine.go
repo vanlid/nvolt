@@ -84,7 +84,9 @@ func machineAddPublicKey(s machineAddSource) (*rsa.PublicKey, error) {
 			return nil, fmt.Errorf("parse public key: %w", err)
 		}
 	case s.pkcs11:
-		module, uri, err := resolveEnrollTarget(s.module, s.uri)
+		// nil identity: `machine add --pkcs11` registers whichever key the user
+		// selects (no existing identity to pin against, unlike rebind).
+		module, uri, err := resolveEnrollTarget(s.module, s.uri, nil)
 		if err != nil {
 			return nil, err
 		}

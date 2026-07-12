@@ -316,7 +316,7 @@ func TestResolveEnrollURINonInteractiveErrorsWithoutHanging(t *testing.T) {
 	if isInteractive() {
 		t.Skip("stdin is a terminal in this environment; non-interactive gating not exercised")
 	}
-	_, err := resolveEnrollURI("/nonexistent/pkcs11-module.so")
+	_, err := resolveEnrollURI("/nonexistent/pkcs11-module.so", nil)
 	if err == nil {
 		t.Fatal("expected an error when stdin is not a terminal, got nil")
 	}
@@ -407,7 +407,7 @@ func TestPKCS11ImportCreatesUsableKey(t *testing.T) {
 func TestResolveEnrollTargetExplicitFlagsWin(t *testing.T) {
 	const wantModule = "/some/explicit/module.so"
 
-	gotModule, gotURI, err := resolveEnrollTarget(wantModule, wantURI)
+	gotModule, gotURI, err := resolveEnrollTarget(wantModule, wantURI, nil)
 	if err != nil {
 		t.Fatalf("resolveEnrollTarget with explicit flags: %v", err)
 	}

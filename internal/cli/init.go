@@ -74,7 +74,9 @@ func pkcs11OptsFromFlags(cmd *cobra.Command) (*pkcs11EnrollOpts, error) {
 	flagModule, _ := cmd.Flags().GetString("pkcs11-module")
 	flagURI, _ := cmd.Flags().GetString("pkcs11-uri")
 	pinMode, _ := cmd.Flags().GetString("pkcs11-pin-mode")
-	module, uri, err := resolveEnrollTarget(flagModule, flagURI)
+	// nil identity: a fresh enrollment can adopt any on-card key (unlike rebind,
+	// which pins the wizard to the machine's existing identity key).
+	module, uri, err := resolveEnrollTarget(flagModule, flagURI, nil)
 	if err != nil {
 		return nil, fmt.Errorf("--pkcs11 target resolution failed: %w", err)
 	}
