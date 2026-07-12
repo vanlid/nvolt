@@ -12,9 +12,6 @@ env:
   # module (clang-based mingw toolchain; ships its own aarch64-w64-mingw32-gcc
   # wrapper). Bump deliberately — this is the least-tested cross target.
   LLVM_MINGW_VERSION: "20260616"
-  # Prebuilt aarch64 musl cross toolchain used for the nvolt-tpm-static linux-arm64
-  # fully-static build (apt has no arm64 musl cross package).
-  MUSL_CROSS_URL: "https://musl.cc/aarch64-linux-musl-cross.tgz"
 
 jobs:
   # Compute the version ONCE so the injected binary version and the release
@@ -66,7 +63,10 @@ jobs:
   build:
     name: Build ${{ matrix.output }}
     needs: version
-    runs-on: ubuntu-latest
+    # Most variants build (or cross-build) on amd64; the arm64 tpm-static variant
+    # runs on a native arm64 runner so it can use apt's musl-gcc directly instead
+    # of a flaky external cross-toolchain (see that matrix entry's runs_on).
+    runs-on: ${{ matrix.runs_on || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -155,8 +155,11 @@ jobs:
             goos: linux
             goarch: arm64
             output: nvolt-linux-arm64-tpm-static
-            cross_setup: musl-arm64
-            musl_cc: aarch64-linux-musl-gcc
+            # Native arm64 runner: build with apt's musl-gcc directly (same as the
+            # amd64 tpm-static above), no cross-toolchain download needed.
+            runs_on: ubuntu-24.04-arm
+            cross_setup: musl-native
+            musl_cc: musl-gcc
 
     steps:
       - name: Checkout code
@@ -182,7 +185,7 @@ jobs:
             arm64-gnu)   PKGS="$PKGS gcc-aarch64-linux-gnu" ;;
             mingw64)     PKGS="$PKGS gcc-mingw-w64-x86-64" ;;
             musl-native) PKGS="$PKGS musl-tools" ;;
-            *) ;; # llvm-mingw / musl-arm64 / native / darwin: toolchain installed by a later step (or none needed)
+            *) ;; # llvm-mingw / darwin / native: toolchain installed by a later step (or none needed)
           esac
           sudo apt-get install -y $PKGS
 
@@ -195,15 +198,6 @@ jobs:
             "https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW_VERSION}/${asset}"
           sudo tar -xJf /tmp/llvm-mingw.tar.xz -C /opt
           echo "/opt/llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-ubuntu-22.04-x86_64/bin" >> "$GITHUB_PATH"
-
-      - name: Install musl cross toolchain (nvolt-tpm-static linux-arm64)
-        if: matrix.cross_setup == 'musl-arm64'
-        run: |
-          set -euo pipefail
-          curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors --connect-timeout 30 \
-            -o /tmp/musl-cross.tgz "$MUSL_CROSS_URL"
-          sudo tar -xzf /tmp/musl-cross.tgz -C /opt
-          echo "/opt/aarch64-linux-musl-cross/bin" >> "$GITHUB_PATH"
 
       # -----------------------------------------------------------------
       # Build the embedded wolfPKCS11 module (pkcs11 variant, TPM targets)

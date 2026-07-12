@@ -100,11 +100,17 @@ log "wolfSSL $WOLFSSL_TAG (single-threaded static; --enable-singlethreaded keeps
 git clone --depth 1 --branch "$WOLFSSL_TAG" https://github.com/wolfSSL/wolfssl.git "$WORK/wolfssl"
 cd "$WORK/wolfssl"
 ./autogen.sh
+# --disable-werror + specific -Wno-* flags: the Windows cross toolchains (mingw
+# gcc, llvm-mingw clang) hit wolfSSL portability warnings promoted to errors —
+# getpid() undeclared in random.c (-Werror=implicit-function-declaration, a
+# *targeted* -Werror that a generic -Wno-error does NOT cancel) and
+# -Wmissing-format-attribute in types.h. Disable werror at the source and
+# suppress the underlying warnings so nothing is left to escalate.
 ./configure $HOST_FLAG --prefix="$PREFIX" --enable-static --disable-shared --enable-singlethreaded \
-  --disable-examples --disable-crypttests \
+  --disable-examples --disable-crypttests --disable-werror \
   --enable-aescfb --enable-rsapss --enable-keygen --enable-pwdbased \
   --enable-scrypt --enable-cryptocb \
-  C_EXTRA_FLAGS="-fPIC -Wno-error -DWOLFSSL_PUBLIC_MP -DWC_RSA_DIRECT -DHAVE_AES_ECB -DHAVE_AES_KEYWRAP"
+  C_EXTRA_FLAGS="-fPIC -Wno-error -Wno-implicit-function-declaration -Wno-nested-externs -Wno-missing-format-attribute -DWOLFSSL_PUBLIC_MP -DWC_RSA_DIRECT -DHAVE_AES_ECB -DHAVE_AES_KEYWRAP"
 make -j"$JOBS"
 make install
 
