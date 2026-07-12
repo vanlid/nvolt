@@ -33,6 +33,12 @@ const (
 	oaepModeRaw    = "raw"
 )
 
+// oaepSelfTestAttempts bounds retries of the native OAEP-SHA256 probe in
+// selfTestOAEP. Some TPMs (AMD fTPM via wolfPKCS11) transiently fail the first
+// decrypt after key creation; a couple of retries absorb that hiccup without
+// masking a real, repeatable failure.
+const oaepSelfTestAttempts = 3
+
 // Enroll validates that a PKCS#11 token can serve as this machine's key backend
 // and pins the OAEP unwrap mode it actually supports.
 //
@@ -161,8 +167,21 @@ func selfTestOAEP(sess *pkcs11.Session, priv pkcs11.Object, pub *rsa.PublicKey) 
 		return "", fmt.Errorf("self-test: wrap key: %w", err)
 	}
 
-	if got, err := sess.DecryptOAEPSHA256(priv, ct); err == nil && bytes.Equal(got, aes) {
-		return oaepModeNative, nil
+	// Probe native OAEP-SHA256 with a bounded retry: some TPMs (notably the AMD
+	// fTPM, via wolfPKCS11) intermittently return a transient error on the first
+	// decrypt right after key creation — a retry then succeeds. Only a hard error
+	// is retried; a clean decrypt that simply doesn't match means the token isn't
+	// doing OAEP-SHA256 (fall through to raw), so we stop probing immediately.
+	var nativeErr error
+	for attempt := 0; attempt < oaepSelfTestAttempts; attempt++ {
+		got, err := sess.DecryptOAEPSHA256(priv, ct)
+		if err == nil {
+			if bytes.Equal(got, aes) {
+				return oaepModeNative, nil
+			}
+			break
+		}
+		nativeErr = err
 	}
 
 	// Fall back to raw RSA + software OAEP unpad. Reached when the token lacks
@@ -174,6 +193,11 @@ func selfTestOAEP(sess *pkcs11.Session, priv pkcs11.Object, pub *rsa.PublicKey) 
 		}
 	}
 
+	// Surface the underlying native error (previously swallowed) so a genuine
+	// failure is diagnosable instead of a bare "cannot perform" message.
+	if nativeErr != nil {
+		return "", fmt.Errorf("token cannot perform OAEP-SHA256 unwrap: %w", nativeErr)
+	}
 	return "", errors.New("token cannot perform OAEP-SHA256 unwrap")
 }
 
