@@ -183,9 +183,14 @@ jobs:
           PKGS="autoconf automake libtool"
           case "$CROSS_SETUP" in
             arm64-gnu)   PKGS="$PKGS gcc-aarch64-linux-gnu" ;;
-            mingw64)     PKGS="$PKGS gcc-mingw-w64-x86-64" ;;
+            # Windows targets build the wolf stack with CMake+Ninja, NOT
+            # autotools: libtool cannot emit a self-contained DLL from the static
+            # wolf archives under mingw. CMake drives <triple>-gcc -shared
+            # directly. cmake is preinstalled on the runner; ninja is not.
+            mingw64)     PKGS="$PKGS gcc-mingw-w64-x86-64 ninja-build" ;;
+            llvm-mingw)  PKGS="$PKGS ninja-build" ;; # aarch64 toolchain from the llvm-mingw step below
             musl-native) PKGS="$PKGS musl-tools" ;;
-            *) ;; # llvm-mingw / darwin / native: toolchain installed by a later step (or none needed)
+            *) ;; # darwin / native: toolchain installed by a later step (or none needed)
           esac
           sudo apt-get install -y $PKGS
 
@@ -271,6 +276,25 @@ jobs:
         with:
           name: ${{ matrix.output }}
           path: ${{ matrix.output }}
+          retention-days: 1
+
+      # Publish the raw wolfPKCS11 module for the Windows targets as a standalone
+      # downloadable DLL (it is otherwise only embedded inside the .exe). This is
+      # the artifact to validate on real Windows/TPM hardware: it is a
+      # self-contained wolfSSL+wolfTPM+wolfPKCS11 DLL whose runtime deps are
+      # Windows system DLLs only (tbs.dll for the TPM, kernel32, ws2_32, crypt32,
+      # advapi32, the CRT) — no libgcc/libwinpthread/vcruntime. See
+      # build/pkcs11/build-module.sh (the `windows-*` CMake branch).
+      - name: Stage standalone wolfPKCS11 DLL (windows)
+        if: matrix.variant == 'pkcs11' && startsWith(matrix.pkcs11_target, 'windows-')
+        run: cp internal/pkcs11/dist/module.bin "wolfpkcs11-${{ matrix.pkcs11_target }}.dll"
+
+      - name: Upload standalone wolfPKCS11 DLL (windows)
+        if: matrix.variant == 'pkcs11' && startsWith(matrix.pkcs11_target, 'windows-')
+        uses: actions/upload-artifact@v4
+        with:
+          name: wolfpkcs11-${{ matrix.pkcs11_target }}.dll
+          path: wolfpkcs11-${{ matrix.pkcs11_target }}.dll
           retention-days: 1
 
   upload-to-r2:

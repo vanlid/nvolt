@@ -96,6 +96,139 @@ export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig"
 
 log() { printf '\n\033[1;32m== %s ==\033[0m\n' "$1" >&2; }
 
+# =============================================================================
+# Windows targets: CMake cross-build (separate from the autotools path below).
+# -----------------------------------------------------------------------------
+# autotools+libtool cannot emit a self-contained DLL from the static wolf .a
+# archives under mingw: libtool rewrites the link, drops -ldl and mishandles
+# -no-undefined, so the shared-object link never succeeds (this is what failed
+# for the windows targets, NOT mingw itself). CMake invokes `<triple>-gcc
+# -shared` directly, bypassing libtool, and produces a wolfPKCS11.dll whose only
+# runtime dependencies are Windows system DLLs — wolfSSL + wolfTPM are baked in
+# as static archives, and the TPM backend talks to TBS (TPM Base Services), the
+# native Windows TPM 2.0 API, so no wolf* or libgcc runtime DLL is needed.
+#
+# The Linux/musl autotools path below is untouched and still serves every
+# linux-* target and the STATIC_ARCHIVES (nvolt-tpm-static) build.
+# =============================================================================
+if [[ "$TARGET" == windows-* ]]; then
+  command -v cmake >/dev/null || { echo "cmake required for windows targets (>=3.24; older cmake leaks generator-expressions from the wolf imported configs)" >&2; exit 3; }
+  command -v ninja >/dev/null || { echo "ninja required for windows targets" >&2; exit 3; }
+
+  case "$TARGET" in
+    windows-amd64) TRIPLE=x86_64-w64-mingw32;  SYSPROC=x86_64  ;;
+    windows-arm64) TRIPLE=aarch64-w64-mingw32; SYSPROC=aarch64 ;;
+  esac
+  # Windows 10 API level. mingw's <tbs.h> only declares TBS_HCONTEXT (the handle
+  # wolfTPM's WINAPI/TBS backend stores) when _WIN32_WINNT >= 0x0600; without it
+  # the handle degrades to int and tpm2_winapi.c fails to compile (assigning NULL
+  # to an int, which wolfTPM's -Werror makes fatal).
+  WINNT=0x0A00
+
+  TC="$WORK/toolchain-$TARGET.cmake"
+  cat > "$TC" <<EOF
+set(CMAKE_SYSTEM_NAME Windows)
+set(CMAKE_SYSTEM_PROCESSOR $SYSPROC)
+set(CMAKE_C_COMPILER  $TRIPLE-gcc)
+set(CMAKE_RC_COMPILER $TRIPLE-windres)
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY BOTH)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE BOTH)
+EOF
+
+  cmake_build() { # <src-dir> <extra cmake args...>
+    local src=$1; shift
+    cmake -S "$src" -B "$src/build" -G Ninja \
+      -DCMAKE_TOOLCHAIN_FILE="$TC" \
+      -DCMAKE_PREFIX_PATH="$PREFIX" -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+      -DCMAKE_BUILD_TYPE=Release "$@" >&2
+    cmake --build "$src/build" --parallel "$JOBS" >&2
+  }
+
+  log "wolfSSL $WOLFSSL_TAG (static, cmake cross -> $TRIPLE)"
+  git clone --depth 1 --branch "$WOLFSSL_TAG" https://github.com/wolfSSL/wolfssl.git "$WORK/wolfssl"
+  cmake_build "$WORK/wolfssl" -DBUILD_SHARED_LIBS=OFF \
+    -DWOLFSSL_EXAMPLES=no -DWOLFSSL_CRYPT_TESTS=no -DWOLFSSL_SINGLE_THREADED=yes \
+    -DWOLFSSL_AESCFB=yes -DWOLFSSL_KEYGEN=yes -DWOLFSSL_PWDBASED=yes \
+    -DWOLFSSL_CRYPTOCB=yes -DWOLFSSL_PUBLIC_MP=yes -DWOLFSSL_WC_RSA_DIRECT=yes \
+    -DWOLFSSL_AESKEYWRAP=yes -DWOLFSSL_RSA_PSS=yes \
+    -DCMAKE_C_FLAGS="-DHAVE_AES_ECB -DWOLFSSL_PUBLIC_MP -DHAVE_SCRYPT"
+  cmake --install "$WORK/wolfssl/build" >&2
+
+  log "wolfTPM $WOLFTPM_TAG (static, WINAPI/TBS interface)"
+  git clone --depth 1 --branch "$WOLFTPM_TAG" https://github.com/wolfSSL/wolfTPM.git "$WORK/wolfTPM"
+  cmake_build "$WORK/wolfTPM" -DBUILD_SHARED_LIBS=OFF \
+    -DWOLFTPM_EXAMPLES=OFF -DWOLFTPM_INTERFACE=WINAPI -DWOLFTPM_SINGLE_THREADED=yes \
+    -DCMAKE_C_FLAGS="-D_WIN32_WINNT=$WINNT"
+  cmake --install "$WORK/wolfTPM/build" >&2
+  # wolfTPM's cmake install omits the example HAL header that wolfPKCS11's TPM
+  # path #includes as <hal/tpm_io.h> (autotools installs it; cmake does not).
+  # tpm_io.c itself is already compiled into libwolftpm.a, so staging the header
+  # is enough. Mirrors the autotools layout ($PREFIX/include/hal/).
+  mkdir -p "$PREFIX/include/hal"
+  cp "$WORK/wolfTPM/hal/"*.h "$PREFIX/include/hal/"
+
+  log "wolfPKCS11 $WOLFPKCS11_TAG (shared DLL; wolfSSL+wolfTPM baked in, TBS-backed)"
+  git clone --depth 1 --branch "$WOLFPKCS11_TAG" https://github.com/wolfSSL/wolfPKCS11.git "$WORK/wolfPKCS11"
+  # Notes on the link flags:
+  #  -ltbs (via CMAKE_C_STANDARD_LIBRARIES, so it lands LAST on the link line,
+  #    after -lwolftpm): wolfPKCS11 links wolfTPM as a raw -lwolftpm rather than
+  #    the wolftpm::wolftpm imported target, so it does not inherit wolfTPM's
+  #    declared TBS dependency; add it explicitly or Tbsi_*/Tbsip_* stay undefined.
+  #  -static-libgcc: drop the libgcc_s_seh-1.dll runtime dependency so the module
+  #    loads on a stock Windows box with no mingw runtime present.
+  #  -DWP11_DLL: wolfPKCS11's visibility.h leaves WP11_API empty on mingw unless
+  #    WP11_DLL is defined; without it the C_* PKCS#11 entry points are never
+  #    marked __declspec(dllexport) and C_GetFunctionList is not exported, so the
+  #    module has no usable PKCS#11 interface. (Some wolfSSL/wolfTPM internal
+  #    symbols also land in the export table via mingw ld's default auto-export;
+  #    harmless bloat — nvolt resolves only C_GetFunctionList by name.)
+  cmake -S "$WORK/wolfPKCS11" -B "$WORK/wolfPKCS11/build" -G Ninja \
+    -DCMAKE_TOOLCHAIN_FILE="$TC" \
+    -DCMAKE_PREFIX_PATH="$PREFIX" -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+    -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+    -DWOLFPKCS11_TPM=yes -DWOLFPKCS11_SINGLE_THREADED=yes \
+    -DCMAKE_C_FLAGS="-D_WIN32_WINNT=$WINNT -DWOLFPKCS11_TPM_STORE -DWP11_DLL" \
+    -DCMAKE_SHARED_LINKER_FLAGS="-L$PREFIX/lib -static-libgcc" \
+    -DCMAKE_C_STANDARD_LIBRARIES="-ltbs" >&2
+  # Build only the library target: wolfPKCS11's examples #include <dlfcn.h>
+  # (absent on Windows) and would fail the default `all` build.
+  cmake --build "$WORK/wolfPKCS11/build" --target wolfpkcs11 --parallel "$JOBS" >&2
+
+  # No `| head` here: under `pipefail`, head closing the pipe early would SIGPIPE
+  # find and fail the assignment. -name '*.dll' excludes the *.dll.a import lib,
+  # and the shared lib lands directly in build/, so this matches exactly one file.
+  DLL=$(find "$WORK/wolfPKCS11/build" -maxdepth 1 -name 'libwolfpkcs11*.dll' -type f)
+  [ -n "$DLL" ] || { echo "cmake build produced no wolfPKCS11 DLL" >&2; exit 1; }
+  mkdir -p "$(dirname "$OUTPUT_PATH")"
+  cp "$DLL" "$OUTPUT_PATH"
+  "$TRIPLE-strip" --strip-unneeded "$OUTPUT_PATH" 2>/dev/null || true
+
+  log "RESULT"
+  echo "target:  $TARGET (cmake cross via $TRIPLE)" >&2
+  echo "module:  $OUTPUT_PATH" >&2
+  echo "size:    $(ls -lh "$OUTPUT_PATH" | awk '{print $5}')" >&2
+  # Verify the PE export directory (survives strip, unlike the nm symbol table).
+  # C_GetFunctionList is the single entry point nvolt resolves; assert on it.
+  # NB1: read the WHOLE `objdump -p` dump, not a section slice — GNU binutils
+  #   objdump (amd64/mingw) and LLVM objdump (arm64/llvm-mingw) format the export
+  #   table completely differently, but both print the literal export names, so a
+  #   substring match is toolchain-agnostic.
+  # NB2: capture once and match with a bash `case` — piping objdump into `grep
+  #   -q` would SIGPIPE objdump and, under `pipefail`, report a false failure on a
+  #   *successful* match.
+  EXPORTS=$("$TRIPLE-objdump" -p "$OUTPUT_PATH" 2>/dev/null)
+  C_EXPORTS=$(printf '%s\n' "$EXPORTS" | grep -oE '\bC_[A-Za-z0-9_]+' | sort -u | wc -l)
+  echo "exports: $C_EXPORTS PKCS#11 C_ functions" >&2
+  case "$EXPORTS" in
+    *C_GetFunctionList*) ;;
+    *) echo "ERROR: module does not export C_GetFunctionList" >&2; exit 1 ;;
+  esac
+  echo "DLL deps (want system DLLs only; no libwolf*/libgcc):" >&2
+  "$TRIPLE-objdump" -p "$OUTPUT_PATH" 2>/dev/null | awk '/DLL Name/{print "  "$3}' | sort -u >&2 || true
+  exit 0
+fi
+
 log "wolfSSL $WOLFSSL_TAG (single-threaded static; --enable-singlethreaded keeps the static link tests free of pthread symbols)"
 git clone --depth 1 --branch "$WOLFSSL_TAG" https://github.com/wolfSSL/wolfssl.git "$WORK/wolfssl"
 cd "$WORK/wolfssl"
