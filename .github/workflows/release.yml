@@ -40,18 +40,22 @@ jobs:
             VERSION="${GITHUB_REF#refs/tags/}"
             IS_DEV=false
           else
-            # Dev build. Base ONLY on full release tags (vX.Y.Z): --match keeps
-            # v-number tags and drops the rolling 'dev' tag; --exclude '*-*'
-            # additionally drops pre-release tags like v0.2.0-rc1. SemVer-correct:
-            # bump the patch and mark it a pre-release so the dev build sorts
-            # AFTER the last release (v1.0.25) and before the next (v1.0.26).
+            # Dev build. Version scheme: v<upstream X.Y.Z>.<N>-dev.<commits>.<sha>.
+            # X.Y.Z is the ACTUAL upstream base tag — no patch bump, because the
+            # .N sub-version already sorts the fork build after upstream
+            # (v1.0.25.1 > v1.0.25). N is FORK_BUILD from versions.env. The
+            # git-describe --match keeps v-number tags and drops the rolling
+            # 'dev' tag; --exclude '*-*' drops fork (-p11/-rc) and upstream
+            # pre-release tags so we base on a real upstream release.
+            # <commits>.<sha> keep each dev build unique within a given N.
+            N=$(sed -n 's/^FORK_BUILD=//p' build/pkcs11/versions.env | tr -dc '0-9')
+            N="${N:-1}"
             DESC=$(git describe --tags --long --match 'v[0-9]*' --exclude '*-*' 2>/dev/null || true)
             if [[ "$DESC" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)-([0-9]+)-(g[0-9a-f]+)$ ]]; then
-              NEXT_PATCH=$(( ${BASH_REMATCH[3]} + 1 ))
-              VERSION="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${NEXT_PATCH}-dev.${BASH_REMATCH[4]}.${BASH_REMATCH[5]}"
+              VERSION="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}.${N}-dev.${BASH_REMATCH[4]}.${BASH_REMATCH[5]}"
             else
-              # No release tag anywhere in history.
-              VERSION="v0.0.0-dev.0.g${GITHUB_SHA::7}"
+              # No upstream release tag anywhere in history.
+              VERSION="v0.0.0.${N}-dev.0.g${GITHUB_SHA::7}"
             fi
             IS_DEV=true
           fi
@@ -363,10 +367,19 @@ jobs:
           IS_DEV: ${{ needs.version.outputs.is_dev }}
         run: |
           if [[ "$IS_DEV" == "false" ]]; then
-            # Tagged release: publish under the tag; pre-release for any tag
-            # carrying a pre-release suffix (e.g. v0.2.0-rc1).
-            PRERELEASE=""
-            [[ "$VERSION" == *-* ]] && PRERELEASE="--prerelease"
+            # Tagged release. Fork version scheme: v<upstream X.Y.Z>[.<fork N>]-<channel>,
+            # where the optional .N sub-version increments per fork build on the
+            # same upstream base, and the suffix is the channel:
+            #   -p11    -> stable PKCS#11 release (FULL release; e.g. v1.0.26.2-p11)
+            #   -rc<M>  -> release candidate      (prerelease; e.g. v1.0.26.1-rc1)
+            #   -dev    -> rolling dev build       (prerelease)
+            # -p11 is a FULL release so GitHub's /releases/latest/ (what
+            # install.sh pulls) resolves to it; every other -suffix is a prerelease.
+            case "$VERSION" in
+              *-p11) PRERELEASE="" ;;
+              *-*)   PRERELEASE="--prerelease" ;;
+              *)     PRERELEASE="" ;;
+            esac
             gh release create "$VERSION" ./upload/* \
               --title "$VERSION" --generate-notes $PRERELEASE
           else

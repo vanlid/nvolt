@@ -51,9 +51,12 @@
 ### Quick Install (Recommended)
 
 ```bash
-# macOS and Linux (also works in Git Bash on Windows)
-curl -fsSL https://install.nvolt.io/latest/install.sh | bash
+# macOS and Linux (also works in Git Bash on Windows) — installs the PKCS#11 build
+curl -fsSL https://raw.githubusercontent.com/vanlid/nvolt-pkcs11/dist/install.sh | sh
 ```
+
+Grabs the latest stable (`-p11`) release for your platform from GitHub Releases.
+Set `NVOLT_TAG=dev` to install the rolling development build instead.
 
 ### Build from source
 
@@ -63,7 +66,7 @@ instead — `go install ./cmd/nvolt` compiles the working tree by directory, so
 the module path doesn't matter:
 
 ```bash
-git clone https://github.com/vanlid/nvolt.git
+git clone https://github.com/vanlid/nvolt-pkcs11.git
 cd nvolt
 
 # PKCS#11 (default): external hardware tokens (YubiKey/OpenSC) + external TPM
@@ -81,7 +84,7 @@ make build-tpm    # needs prebuilt static archives — see build/pkcs11/README.m
 ```
 
 Prefer no build? Download `nvolt-<os>-<arch>` for your platform from the
-[Releases](https://github.com/vanlid/nvolt/releases) page — see
+[Releases](https://github.com/vanlid/nvolt-pkcs11/releases) page — see
 [Which binary do I need?](#using-a-hardware-key-pkcs11) below.
 
 ## Quick Start
@@ -354,7 +357,7 @@ nvolt pkcs11 generate --token my-yubikey --label my-key --id 01 --bits 2048
 
 nvolt can keep this machine's private key on a hardware token (like a YubiKey) instead of in a file. The key is created on the device and never leaves it — nvolt only sees the public key, and the token itself does the decryption.
 
-**Which binary do I need?** This fork's default release binary — `nvolt-<os>-<arch>` on the [Releases](https://github.com/vanlid/nvolt/releases) page — **is** the PKCS#11 build, so on every platform you have hardware/TPM support out of the box. The three variants:
+**Which binary do I need?** This fork's default release binary — `nvolt-<os>-<arch>` on the [Releases](https://github.com/vanlid/nvolt-pkcs11/releases) page — **is** the PKCS#11 build, so on every platform you have hardware/TPM support out of the box. The three variants:
 
 - **`nvolt-<os>-<arch>` (default)** — PKCS#11: hardware tokens (YubiKey, OpenSC) plus, on Linux/Windows, a **bundled** TPM module. cgo-free, so it's cross-platform (Linux, Windows, macOS). From a clone, `go install -tags pkcs11 ./cmd/nvolt` gets PKCS#11 for external tokens/modules but *not* the bundled TPM module — download this release, or run `make install-embedded`, for that.
 - **`nvolt-linux-<arch>-no-pkcs11-static`** — software keys only, minimal pure-Go fully-static binary (Alpine/scratch/musl containers). No PKCS#11. Linux only. From a clone, `CGO_ENABLED=0 go install ./cmd/nvolt` reproduces this exact static binary (a plain build is **dynamically linked**); the upstream `install.nvolt.io` script ships an equivalent software-only binary. (`-tpm-static` is a functional superset but links the wolfSSL/wolfTPM C stack; this is the small pure-Go build.)

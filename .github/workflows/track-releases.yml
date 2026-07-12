@@ -135,6 +135,10 @@ jobs:
           is_safe_tag "$WOLFTPM_LATEST" && new_wolftpm="$WOLFTPM_LATEST"
           is_safe_tag "$WOLFPKCS11_LATEST" && new_wolfpkcs11="$WOLFPKCS11_LATEST"
 
+          # A wolf pin bump is a release-worthy fork change, so advance the fork
+          # build number N (see build/pkcs11/versions.env / release.yml).
+          new_fork_build=$(( ${FORK_BUILD:-1} + 1 ))
+
           branch="ci/bump-wolf-pins-${new_wolfssl}-${new_wolftpm}-${new_wolfpkcs11}"
           branch=$(printf '%s' "$branch" | tr -c 'A-Za-z0-9._-' '-')
 
@@ -160,12 +164,19 @@ jobs:
             printf 'WOLFSSL_TAG=%s\n' "$new_wolfssl"
             printf 'WOLFTPM_TAG=%s\n' "$new_wolftpm"
             printf 'WOLFPKCS11_TAG=%s\n' "$new_wolfpkcs11"
+            echo ""
+            echo "# FORK_BUILD (N) is the fork's build number on the CURRENT upstream base,"
+            echo "# used by the release version scheme v<upstream X.Y.Z>.<N>-<channel> (see"
+            echo "# .github/workflows/release.yml). Bump it for each release-worthy fork change"
+            echo "# (the wolf-track job bumps it automatically when it bumps a wolf pin above);"
+            echo "# reset to 1 when rebasing onto a new upstream X.Y.Z."
+            printf 'FORK_BUILD=%s\n' "$new_fork_build"
           } > build/pkcs11/versions.env
 
           git add build/pkcs11/versions.env
           git commit \
-            -m "chore(pkcs11): bump wolfSSL/wolfTPM/wolfPKCS11 pins" \
-            -m "Automated bump by .github/workflows/track-releases.yml (wolf-track job)."
+            -m "chore(pkcs11): bump wolfSSL/wolfTPM/wolfPKCS11 pins + fork build N" \
+            -m "Advances FORK_BUILD ${FORK_BUILD:-1} -> ${new_fork_build}. Automated bump by .github/workflows/track-releases.yml (wolf-track job)."
 
           git push origin "$branch"
 
@@ -264,7 +275,7 @@ jobs:
 
           body_file=$(mktemp)
           {
-            echo "iluxav/nvolt published release \`$UPSTREAM_TAG\`, which this fork (vanlid/nvolt) has not yet merged or rebased onto."
+            echo "iluxav/nvolt published release \`$UPSTREAM_TAG\`, which this fork (vanlid/nvolt-pkcs11) has not yet merged or rebased onto."
             echo
             echo "Auto-merging is not attempted here — this fork carries fork-only PKCS#11/TPM changes that a blind merge/rebase could silently conflict with. Please review and merge manually:"
             echo

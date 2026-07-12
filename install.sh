@@ -1,10 +1,20 @@
 #!/bin/sh
 set -e
 
-# nvolt installer script
-# Usage: curl -fsSL https://install.nvolt.io/latest/install.sh | sh
+# nvolt-pkcs11 installer — downloads the PKCS#11 build from GitHub Releases.
+# Usage: curl -fsSL https://raw.githubusercontent.com/vanlid/nvolt-pkcs11/dist/install.sh | sh
+#   NVOLT_TAG=dev  ->  install the rolling development build instead of the
+#                      latest stable (-p11) release.
 
-BASE_URL="https://install.nvolt.io/latest"
+REPO="vanlid/nvolt-pkcs11"
+NVOLT_TAG="${NVOLT_TAG:-latest}"
+if [ "$NVOLT_TAG" = "latest" ]; then
+    # GitHub's /releases/latest/ resolves to the newest NON-prerelease release
+    # (the -p11 stable builds; the rolling `dev` build is a prerelease).
+    BASE_URL="https://github.com/${REPO}/releases/latest/download"
+else
+    BASE_URL="https://github.com/${REPO}/releases/download/${NVOLT_TAG}"
+fi
 INSTALL_DIR="/usr/local/bin"
 BINARY_NAME="nvolt"
 
