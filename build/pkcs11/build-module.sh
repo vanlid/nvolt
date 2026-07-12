@@ -115,7 +115,11 @@ cd "$WORK/wolfssl"
 #    expose. For NATIVE builds only (empty --host) add the host kernel headers as
 #    an idirafter fallback (musl's own headers still win); never for cross
 #    builds, where host /usr/include is the wrong arch.
-WOLF_CFLAGS="-g -O2 -include unistd.h -Wno-error -Wno-implicit-function-declaration -Wno-nested-externs -Wno-missing-format-attribute"
+# NOTE: `make CFLAGS=` REPLACES the CFLAGS wolfSSL baked at configure time (which
+# included -fPIC and the feature -D defines), so this must carry them itself —
+# otherwise wolfSSL objects come out non-PIC and wolfPKCS11's shared-object link
+# fails with "relocation ... can not be used when making a shared object".
+WOLF_CFLAGS="-g -O2 -fPIC -include unistd.h -Wno-error -Wno-implicit-function-declaration -Wno-nested-externs -Wno-missing-format-attribute -DWOLFSSL_PUBLIC_MP -DWC_RSA_DIRECT -DHAVE_AES_ECB -DHAVE_AES_KEYWRAP"
 if [ -z "$HOST_TRIPLE" ]; then
   MULTIARCH=$(gcc -print-multiarch 2>/dev/null || true)
   WOLF_CFLAGS="$WOLF_CFLAGS -idirafter /usr/include${MULTIARCH:+ -idirafter /usr/include/$MULTIARCH}"
