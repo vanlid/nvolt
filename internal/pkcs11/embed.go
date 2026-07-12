@@ -105,5 +105,13 @@ func extractEmbeddedModule() (string, error) {
 	if err != nil || dir == "" {
 		dir = os.TempDir()
 	}
+	// The wolfPKCS11 module uses a filesystem token store (not TPM NVRAM, which
+	// needs a Windows-locked hierarchy auth). Ensure its store dir — set by the
+	// cli root as WOLFPKCS11_TOKEN_PATH, nvolt's own config dir — exists before
+	// C_Initialize, since wolfPKCS11 writes token files there but won't create
+	// the directory itself.
+	if store := os.Getenv("WOLFPKCS11_TOKEN_PATH"); store != "" {
+		_ = os.MkdirAll(store, 0o700)
+	}
 	return materializeModule(filepath.Join(dir, "nvolt"), embeddedModuleBytes)
 }

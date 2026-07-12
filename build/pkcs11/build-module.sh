@@ -56,6 +56,17 @@ if [ "${WOLF_DEBUG:-0}" = "1" ]; then
   WOLF_DEBUG_STRIP=0
 fi
 
+# Token store: FILESYSTEM, not TPM-NVRAM. We keep -DWOLFPKCS11_TPM (keys are
+# generated/wrapped/used inside the TPM) but deliberately do NOT define
+# -DWOLFPKCS11_TPM_STORE. The NV-store path stores the token in TPM NVRAM, whose
+# read/write needs a TPM hierarchy authorization that Windows owns and does not
+# grant user apps — C_Initialize failed there with TPM_RC_AUTH_UNAVAILABLE on a
+# TPM2_NV_Read. The filesystem store keeps only TPM-wrapped key blobs on disk
+# (private keys never leave the TPM), and nvolt points WOLFPKCS11_TOKEN_PATH at
+# its own config dir. (WOLFPKCS11_TPM and WOLFPKCS11_TPM_STORE are independent
+# #ifdefs in wolfPKCS11, so dropping the latter does not downgrade keys to
+# software.)
+
 # Resolve a relative STATIC_ARCHIVES against the repo root NOW, before we cd into
 # the temp build dir: the install step below runs from $WORK, so a relative path
 # would otherwise land in $WORK/<path> instead of the repo checkout.
@@ -203,7 +214,7 @@ EOF
     -DCMAKE_PREFIX_PATH="$PREFIX" -DCMAKE_INSTALL_PREFIX="$PREFIX" \
     -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
     -DWOLFPKCS11_TPM=yes -DWOLFPKCS11_SINGLE_THREADED=yes \
-    -DCMAKE_C_FLAGS="-D_WIN32_WINNT=$WINNT -DWOLFPKCS11_TPM_STORE -DWP11_DLL $WOLF_DEBUG_DEFS" \
+    -DCMAKE_C_FLAGS="-D_WIN32_WINNT=$WINNT -DWP11_DLL $WOLF_DEBUG_DEFS" \
     -DCMAKE_SHARED_LINKER_FLAGS="-L$PREFIX/lib -static-libgcc" \
     -DCMAKE_C_STANDARD_LIBRARIES="-ltbs" >&2
   # Build only the library target: wolfPKCS11's examples #include <dlfcn.h>
@@ -296,7 +307,7 @@ cd "$WORK/wolfPKCS11"
 ./autogen.sh
 ./configure $HOST_FLAG --prefix="$PREFIX" --enable-static --enable-singlethreaded --enable-wolftpm --disable-dh \
   --disable-examples --with-wolfcrypt="$PREFIX" \
-  CPPFLAGS="-I$PREFIX/include" CFLAGS="-DWOLFPKCS11_TPM_STORE -I$PREFIX/include $WOLF_DEBUG_DEFS" \
+  CPPFLAGS="-I$PREFIX/include" CFLAGS="-I$PREFIX/include $WOLF_DEBUG_DEFS" \
   LDFLAGS="-L$PREFIX/lib"
 # On Windows, wolfPKCS11's examples #include <dlfcn.h> (Unix dlopen, absent on
 # mingw), and --disable-examples doesn't stop `make all` building them — so build
@@ -307,7 +318,7 @@ cd "$WORK/wolfPKCS11"
 # wolfSSL fix. Other targets keep plain `make all` unchanged.
 if [[ "$HOST_TRIPLE" == *mingw* ]]; then
   make -j"$JOBS" src/libwolfpkcs11.la \
-    CFLAGS="-g -O2 -DWOLFPKCS11_TPM_STORE -I$PREFIX/include -include unistd.h -Wno-error -Wno-attributes $WOLF_DEBUG_DEFS"
+    CFLAGS="-g -O2 -I$PREFIX/include -include unistd.h -Wno-error -Wno-attributes $WOLF_DEBUG_DEFS"
 else
   make -j"$JOBS"
 fi
