@@ -1,3 +1,5 @@
+//go:build pkcs11
+
 package cli
 
 import (
@@ -5,7 +7,6 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,31 +34,6 @@ func readMachineInfo(t *testing.T) *types.MachineInfo {
 		t.Fatal(err)
 	}
 	return mi
-}
-
-// captureStdout redirects os.Stdout for the duration of f, returning whatever
-// was written along with f's error. It also redirects the ui package's
-// logger output (which caches os.Stdout at init time rather than reading the
-// global var on every call), so ui.Info/ui.Section/etc. are captured too.
-func captureStdout(f func() error) (string, error) {
-	orig := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		return "", err
-	}
-	os.Stdout = w
-	ui.SetOutput(w)
-	defer func() {
-		os.Stdout = orig
-		ui.SetOutput(orig)
-	}()
-
-	fnErr := f()
-
-	w.Close()
-	var buf bytes.Buffer
-	_, _ = io.Copy(&buf, r)
-	return buf.String(), fnErr
 }
 
 // TestPKCS11ListShowsKeys drives runPKCS11List (the pkcs11 list command's
