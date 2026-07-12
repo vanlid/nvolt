@@ -148,7 +148,7 @@ func runPush(envFile, environment, project string, keyValues []string, dryRun bo
 	ui.Success("Master key wrapped for machines with access")
 
 	// Encrypt and save each secret
-	ui.Step(fmt.Sprintf("Encrypting %d secrets for environment '%s'", len(secrets), ui.Cyan(environment)))
+	ui.Step("%s", fmt.Sprintf("Encrypting %d secrets for environment '%s'", len(secrets), ui.Cyan(environment)))
 	for key, value := range secrets {
 		encrypted, err := vault.EncryptSecret(masterKey, value)
 		if err != nil {
@@ -164,7 +164,7 @@ func runPush(envFile, environment, project string, keyValues []string, dryRun bo
 		}
 	}
 
-	ui.Success(fmt.Sprintf("Successfully pushed %d secrets", len(secrets)))
+	ui.Success("%s", fmt.Sprintf("Successfully pushed %d secrets", len(secrets)))
 	ui.PrintKeyValue("  Environment", ui.Cyan(environment))
 	ui.PrintKeyValue("  Vault", ui.Gray(vaultPath))
 	ui.Section("Secrets encrypted:")

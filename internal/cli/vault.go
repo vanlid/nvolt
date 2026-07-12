@@ -199,7 +199,7 @@ func runVaultVerify() error {
 	if err != nil {
 		errors = append(errors, fmt.Sprintf("Cannot load current machine info: %v", err))
 	} else {
-		ui.Success(fmt.Sprintf("Current machine: %s", ui.Cyan(currentMachine.ID)))
+		ui.Success("%s", fmt.Sprintf("Current machine: %s", ui.Cyan(currentMachine.ID)))
 
 		// List environments to check access
 		envDirs, err := vault.ListDirs(paths.Secrets)
@@ -232,7 +232,7 @@ func runVaultVerify() error {
 	if err != nil {
 		errors = append(errors, fmt.Sprintf("Cannot list machines: %v", err))
 	} else {
-		ui.Success(fmt.Sprintf("Found %d machine(s)", len(machines)))
+		ui.Success("%s", fmt.Sprintf("Found %d machine(s)", len(machines)))
 
 		// Get list of environments
 		envDirs, err := vault.ListDirs(paths.Secrets)
@@ -304,7 +304,7 @@ func runVaultVerify() error {
 			}
 		}
 
-		ui.Success(fmt.Sprintf("Found %d wrapped key(s) across all environments", totalWrappedKeys))
+		ui.Success("%s", fmt.Sprintf("Found %d wrapped key(s) across all environments", totalWrappedKeys))
 	}
 
 	// Check secrets
@@ -322,7 +322,7 @@ func runVaultVerify() error {
 			}
 			totalSecrets += len(secretFiles)
 		}
-		ui.Success(fmt.Sprintf("Found %d secret(s) across %d environment(s)", totalSecrets, len(envDirs)))
+		ui.Success("%s", fmt.Sprintf("Found %d secret(s) across %d environment(s)", totalSecrets, len(envDirs)))
 	}
 
 	// Print summary

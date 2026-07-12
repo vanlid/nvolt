@@ -89,7 +89,7 @@ func runSync(rotate bool, environment string, autoGrant bool) error {
 	defer closeDec()
 
 	if rotate {
-		ui.Step(fmt.Sprintf("Rotating master key for environment '%s'", ui.Cyan(environment)))
+		ui.Step("%s", fmt.Sprintf("Rotating master key for environment '%s'", ui.Cyan(environment)))
 
 		// Load existing master key first to re-encrypt secrets
 		oldMasterKey, err := vault.UnwrapMasterKey(paths, environment, dec)
@@ -110,7 +110,7 @@ func runSync(rotate bool, environment string, autoGrant bool) error {
 
 		ui.Success("Generated new master key and re-encrypted all secrets")
 	} else {
-		ui.Step(fmt.Sprintf("Re-wrapping master key for environment '%s'", ui.Cyan(environment)))
+		ui.Step("%s", fmt.Sprintf("Re-wrapping master key for environment '%s'", ui.Cyan(environment)))
 
 		// Load existing master key
 		masterKey, err = vault.UnwrapMasterKey(paths, environment, dec)
@@ -137,7 +137,7 @@ func runSync(rotate bool, environment string, autoGrant bool) error {
 		return fmt.Errorf("failed to list machines: %w", err)
 	}
 
-	ui.Success(fmt.Sprintf("Master key wrapped for %d machine(s)", len(machines)))
+	ui.Success("%s", fmt.Sprintf("Master key wrapped for %d machine(s)", len(machines)))
 	for _, m := range machines {
 		ui.Substep(fmt.Sprintf("%s (%s)", ui.Cyan(m.ID), ui.Gray(m.Hostname)))
 	}
@@ -187,7 +187,7 @@ func rotateSecretsEncryption(paths *vault.Paths, environment string, oldKey, new
 		return nil
 	}
 
-	ui.Step(fmt.Sprintf("Re-encrypting %d secret(s) in environment '%s'", len(secretFiles), ui.Cyan(environment)))
+	ui.Step("%s", fmt.Sprintf("Re-encrypting %d secret(s) in environment '%s'", len(secretFiles), ui.Cyan(environment)))
 
 	for _, secretFile := range secretFiles {
 		// Extract key name from filename
@@ -217,7 +217,7 @@ func rotateSecretsEncryption(paths *vault.Paths, environment string, oldKey, new
 		}
 	}
 
-	ui.Success(fmt.Sprintf("Re-encrypted %d secret(s)", len(secretFiles)))
+	ui.Success("%s", fmt.Sprintf("Re-encrypted %d secret(s)", len(secretFiles)))
 
 	return nil
 }
