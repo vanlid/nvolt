@@ -1,15 +1,12 @@
 name: Build and Release Binaries
 
 on:
+  # Tags (v*) cut stable/rc releases. Dev releases are cut on demand via
+  # workflow_dispatch (Actions tab / gh workflow run) rather than on every push,
+  # to avoid a full matrix build per commit.
   push:
-    # Tags (v*) cut stable/rc releases; pushes to dist auto-publish a rolling
-    # dev release (the version job derives v<X.Y.Z>.<N>-dev.<commits>.<sha> for
-    # any non-tag ref), so "just push dist" keeps a fresh dev build available to
-    # test without a manual dispatch.
     tags:
       - "v*"
-    branches:
-      - dist
   workflow_dispatch:
 
 env:

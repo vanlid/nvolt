@@ -32,15 +32,32 @@ jobs:
       - name: Install SoftHSM2 + OpenSC (pkcs11-tool)
         run: sudo apt-get update && sudo apt-get install -y softhsm2 opensc
 
-      - name: Unit + PKCS#11 integration tests
+      # Two passes, because the PKCS#11 tests have TWO gates that must agree:
+      # a compile-time gate (//go:build pkcs11 selects the real purego loader over
+      # the stub) and a runtime gate (they t.Skip unless NVOLT_TEST_PKCS11_MODULE
+      # is set). A single no-tag pass that set the module env satisfied only the
+      # runtime gate, so the integration tests ran against the STUB and failed
+      # with "not built with PKCS#11 support". Each pass now satisfies both gates
+      # consistently.
+      #
+      # -vet=off: internal/cli has pre-existing non-constant-format vet findings
+      # (machine.go/pull.go/push.go/run.go/sync.go/vault.go, ~24) unrelated to this
+      # feature; new packages are vet-checked strictly in the vet step above.
+      # -race is omitted: it needs CGO_ENABLED=1 + a C toolchain, which this
+      # project deliberately avoids (purego, no cgo).
+
+      # Pass 1 — software / no-pkcs11 build. NVOLT_TEST_PKCS11_MODULE is unset, so
+      # the PKCS#11 integration tests self-skip; this exercises the stub path
+      # (pkcs11_stub_test.go and the rest of the default build).
+      - name: Unit tests (software build)
+        run: CGO_ENABLED=0 go test -vet=off ./...
+
+      # Pass 2 — pkcs11 build with the SoftHSM module. This is the ONLY pass that
+      # compiles the real loader, so it's where every //go:build pkcs11 test
+      # (loader/session/discover + the keyprovider/cli PKCS#11 integration tests)
+      # actually runs.
+      - name: PKCS#11 integration tests (pkcs11 build + SoftHSM)
         run: |
           MODULE=$(ls /usr/lib/softhsm/libsofthsm2.so /usr/lib/*/softhsm/libsofthsm2.so 2>/dev/null | head -1)
           export NVOLT_TEST_PKCS11_MODULE="$MODULE" NVOLT_PKCS11_PIN=1234
-          # -vet=off: internal/cli has pre-existing non-constant-format vet
-          # findings (machine.go/pull.go/push.go/run.go/sync.go/vault.go, ~24
-          # findings) unrelated to this feature; new packages are vet-checked
-          # strictly above.
-          #
-          # -race is intentionally omitted: it requires CGO_ENABLED=1 and a C
-          # toolchain, which this project deliberately avoids (purego, no cgo).
-          CGO_ENABLED=0 go test -vet=off ./...
+          CGO_ENABLED=0 go test -tags pkcs11 -vet=off ./...
