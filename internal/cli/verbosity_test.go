@@ -264,13 +264,13 @@ func TestPKCS11GenerateRejectsDuplicateExplicitID(t *testing.T) {
 	}
 }
 
-// TestPKCS11ImportVerboseShowsLabelID drives runPKCS11Import against a real
-// SoftHSM fixture token and proves the default (Info) output is the one-line
-// success naming the token, while Label/ID detail only appears at Verbose.
-// It also pins the %-escaping gotcha: a label containing a literal "%" must
-// render literally at Verbose (single-pass Printf), not as a corrupted
-// "%!"-style artifact or a doubled "%%".
-func TestPKCS11ImportVerboseShowsLabelID(t *testing.T) {
+// TestPKCS11ImportShowsChosenKeyAndNextStep drives runPKCS11Import against a
+// real SoftHSM fixture token and proves import now mirrors generate's output:
+// the default (Info) success line names the token, the chosen label and id, and
+// the copy-paste `nvolt init --pkcs11` next-step. It also pins the %-escaping
+// gotcha: a label containing a literal "%" renders literally (single "%"), not as
+// a corrupted "%!"-style artifact or a doubled "%%".
+func TestPKCS11ImportShowsChosenKeyAndNextStep(t *testing.T) {
 	mod := hsmtest.Provision(t)
 	t.Setenv("NVOLT_PKCS11_PIN", hsmtest.PIN)
 	dir := t.TempDir()
@@ -299,27 +299,99 @@ func TestPKCS11ImportVerboseShowsLabelID(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out, hsmtest.TokenLabel) {
-		t.Fatalf("expected the one-line success to name the token at Info level:\n%s", out)
+		t.Fatalf("expected the success line to name the token at Info level:\n%s", out)
 	}
-	if strings.Contains(out, labelWithPercent) {
-		t.Fatalf("default (Info) import output leaked the key label:\n%s", out)
+	// Generate parity: the chosen label and id are shown at the default level,
+	// and the label's literal "%" survives (rendered as a single "%").
+	if !strings.Contains(out, "label="+labelWithPercent) {
+		t.Fatalf("expected the chosen label %q at Info level:\n%s", labelWithPercent, out)
+	}
+	if !strings.Contains(out, "id=07") {
+		t.Fatalf("expected the chosen id at Info level:\n%s", out)
+	}
+	if !strings.Contains(out, "nvolt init --pkcs11") || !strings.Contains(out, "id=%07") {
+		t.Fatalf("expected the copy-paste init next-step with id=%%07 at Info level:\n%s", out)
+	}
+	if strings.Contains(out, "%!") {
+		t.Fatalf("output shows a corrupted format-verb artifact (%%!):\n%s", out)
+	}
+	if strings.Contains(out, "my%%key") {
+		t.Fatalf("output doubled the literal %%, got:\n%s", out)
+	}
+}
+
+// TestPKCS11ImportAutoAssignsNextFreeID proves that, exactly like generate,
+// omitting --id makes import auto-pick the lowest unused single-byte CKA_ID and
+// default the label to "nvolt". The SoftHSM fixture pre-seeds ids 01 and 02, so
+// the first auto-assignment lands on 03. Skipped unless NVOLT_TEST_PKCS11_MODULE
+// is set.
+func TestPKCS11ImportAutoAssignsNextFreeID(t *testing.T) {
+	mod := hsmtest.Provision(t)
+	t.Setenv("NVOLT_PKCS11_PIN", hsmtest.PIN)
+	dir := t.TempDir()
+
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pemBytes, err := nvcrypto.EncodePrivateKeyPEM(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(dir, "k.pem")
+	if err := os.WriteFile(keyPath, pemBytes, 0o600); err != nil {
+		t.Fatal(err)
 	}
 
-	ui.SetLevel(ui.LevelVerbose)
-	vout, err := captureStdout(func() error {
-		return runPKCS11Import(mod, hsmtest.TokenLabel, labelWithPercent, "08", keyPath, "env")
+	ui.SetLevel(ui.LevelInfo)
+	defer ui.SetLevel(ui.LevelInfo)
+	// Empty label and empty id: label defaults to "nvolt", id auto-assigns to the
+	// next free single-byte id (01/02 pre-seeded -> 03).
+	out, err := captureStdout(func() error {
+		return runPKCS11Import(mod, hsmtest.TokenLabel, "", "", keyPath, "env")
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(vout, labelWithPercent) {
-		t.Fatalf("expected the literal label %q at Verbose level (not corrupted or doubled), got:\n%s", labelWithPercent, vout)
+	if !strings.Contains(out, "label=nvolt") {
+		t.Fatalf("expected the default label 'nvolt' at Info level:\n%s", out)
 	}
-	if strings.Contains(vout, "%!") {
-		t.Fatalf("verbose output shows a corrupted format-verb artifact (%%!):\n%s", vout)
+	if !strings.Contains(out, "id=03") {
+		t.Fatalf("expected auto-assigned id 03 (01/02 pre-seeded) at Info level:\n%s", out)
 	}
-	if strings.Contains(vout, "my%%key") {
-		t.Fatalf("verbose output doubled the literal %%, got:\n%s", vout)
+	if !strings.Contains(out, "id=%03") {
+		t.Fatalf("expected the next-step URI to carry id=%%03:\n%s", out)
+	}
+}
+
+// TestPKCS11ImportRejectsDuplicateExplicitID proves that, like generate, an
+// explicit --id colliding with an existing key on the token is rejected (the
+// SoftHSM fixture pre-seeds id 01). Skipped unless NVOLT_TEST_PKCS11_MODULE is
+// set.
+func TestPKCS11ImportRejectsDuplicateExplicitID(t *testing.T) {
+	mod := hsmtest.Provision(t)
+	t.Setenv("NVOLT_PKCS11_PIN", hsmtest.PIN)
+	dir := t.TempDir()
+
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pemBytes, err := nvcrypto.EncodePrivateKeyPEM(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(dir, "k.pem")
+	if err := os.WriteFile(keyPath, pemBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err = runPKCS11Import(mod, hsmtest.TokenLabel, "dup", "01", keyPath, "env")
+	if err == nil {
+		t.Fatal("expected an error importing a key with an already-used explicit id 01")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("expected an 'already exists' duplicate-id error, got: %v", err)
 	}
 }
 

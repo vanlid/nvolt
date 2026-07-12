@@ -289,6 +289,59 @@ func (s *Session) ListKeyIDs() [][]byte {
 	return ids
 }
 
+// DeleteKeyByID destroys every RSA key object (both the private and the public
+// half) on the session's token whose CKA_ID equals id, via C_DestroyObject, and
+// returns the number of objects destroyed. The session must be logged in to
+// reach private objects. Reuses findRSAObjects to locate the halves; a destroy
+// failure aborts and returns the count destroyed so far.
+func (s *Session) DeleteKeyByID(id []byte) (int, error) {
+	if len(id) == 0 {
+		return 0, fmt.Errorf("DeleteKeyByID: empty id")
+	}
+	count := 0
+	for _, class := range []C.CK_ULONG{C.CKO_PRIVATE_KEY, C.CKO_PUBLIC_KEY} {
+		objs, err := s.findRSAObjects(class, id)
+		if err != nil {
+			return count, err
+		}
+		for _, obj := range objs {
+			if rv := C.C_DestroyObject(s.handle, C.CK_OBJECT_HANDLE(obj)); rv != C.CKR_OK {
+				return count, fmt.Errorf("C_DestroyObject: %s", rvStr(rv))
+			}
+			count++
+		}
+	}
+	return count, nil
+}
+
+// RelabelKeyByID sets CKA_LABEL to label on every RSA key object (both the
+// private and the public half) whose CKA_ID equals id, via C_SetAttributeValue,
+// and returns the number of objects updated. The session must be logged in to
+// modify private objects. Reuses findRSAObjects to locate the halves.
+func (s *Session) RelabelKeyByID(id []byte, label string) (int, error) {
+	if len(id) == 0 {
+		return 0, fmt.Errorf("RelabelKeyByID: empty id")
+	}
+	count := 0
+	for _, class := range []C.CK_ULONG{C.CKO_PRIVATE_KEY, C.CKO_PUBLIC_KEY} {
+		objs, err := s.findRSAObjects(class, id)
+		if err != nil {
+			return count, err
+		}
+		for _, obj := range objs {
+			tmpl := &cTemplate{}
+			tmpl.addBytes(C.CKA_LABEL, []byte(label))
+			rv := C.C_SetAttributeValue(s.handle, C.CK_OBJECT_HANDLE(obj), tmpl.ptr(), tmpl.count())
+			tmpl.free()
+			if rv != C.CKR_OK {
+				return count, fmt.Errorf("C_SetAttributeValue: %s", rvStr(rv))
+			}
+			count++
+		}
+	}
+	return count, nil
+}
+
 // tokenLabel reads the space-trimmed CKA label from a slot's CK_TOKEN_INFO.
 func (m *Module) tokenLabel(slot C.CK_SLOT_ID) (string, error) {
 	var info C.CK_TOKEN_INFO
@@ -687,6 +740,30 @@ func (s *Session) ImportRSAPrivateKey(label string, id []byte, priv *rsa.Private
 		}
 		return 0, fmt.Errorf("C_CreateObject: %s", rvStr(rv))
 	}
+
+	// Also create the matching CKO_PUBLIC_KEY object, mirroring the purego
+	// loader (and GenerateRSAKeyPair's public template): C_CreateObject creates
+	// only what we hand it, so without this the imported (CKA_PRIVATE) key would
+	// be invisible to no-login discovery (`pkcs11 list`) and to the fingerprint
+	// path. Best-effort — a token that auto-derives the public half must not fail
+	// an import whose private object already succeeded; wolfPKCS11 needs it.
+	pub := &cTemplate{}
+	pub.addULong(C.CKA_CLASS, C.CKO_PUBLIC_KEY)
+	pub.addULong(C.CKA_KEY_TYPE, C.CKK_RSA)
+	pub.addBool(C.CKA_TOKEN)
+	pub.addBool(C.CKA_ENCRYPT)
+	pub.addBool(C.CKA_VERIFY)
+	pub.addBool(C.CKA_WRAP)
+	pub.addBytes(C.CKA_LABEL, []byte(label))
+	pub.addBytes(C.CKA_MODULUS, priv.N.Bytes())
+	pub.addBytes(C.CKA_PUBLIC_EXPONENT, big.NewInt(int64(priv.E)).Bytes())
+	if len(id) > 0 {
+		pub.addBytes(C.CKA_ID, id)
+	}
+	var pubH C.CK_OBJECT_HANDLE
+	_ = C.C_CreateObject(s.handle, pub.ptr(), pub.count(), &pubH)
+	pub.free()
+
 	return Object(objH), nil
 }
 

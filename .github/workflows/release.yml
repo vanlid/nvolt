@@ -243,9 +243,18 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           set -euo pipefail
+          TAGS="$BUILD_TAGS"
+          # Dev channel ONLY: fold in the nvolt_dev tag so dev builds ship the
+          # `pkcs11 delete`/`relabel` maintenance subcommands. rc/stable
+          # (-rc/-p11) must NOT get them. Gate on the version containing '-dev',
+          # mirroring the debug-module dev gating below. It only takes effect on
+          # the pkcs11 variants that carry the loader; harmless on the others.
+          case "$VERSION" in
+            *-dev*) TAGS="${TAGS:+$TAGS }nvolt_dev" ;;
+          esac
           TAGS_ARGS=()
-          if [ -n "$BUILD_TAGS" ]; then
-            TAGS_ARGS=(-tags "$BUILD_TAGS")
+          if [ -n "$TAGS" ]; then
+            TAGS_ARGS=(-tags "$TAGS")
           fi
 
           go build -trimpath "${TAGS_ARGS[@]}" -ldflags="-s -w -X github.com/iluxav/nvolt/internal/cli.version=${VERSION}" -o "$OUTPUT" cmd/nvolt/main.go
@@ -261,7 +270,14 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           set -euo pipefail
-          go build -trimpath -tags "tpm_static netgo osusergo" \
+          # Dev channel ONLY: add nvolt_dev so the dev tpm-static binary also
+          # carries the `pkcs11 delete`/`relabel` maintenance subcommands (their
+          # Session methods are compiled under tpm_static too). rc/stable omit it.
+          TAGS="tpm_static netgo osusergo"
+          case "$VERSION" in
+            *-dev*) TAGS="$TAGS nvolt_dev" ;;
+          esac
+          go build -trimpath -tags "$TAGS" \
             -ldflags="-s -w -X github.com/iluxav/nvolt/internal/cli.version=${VERSION} -linkmode external -extldflags \"-static\"" \
             -o "$OUTPUT" cmd/nvolt/main.go
 

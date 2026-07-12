@@ -21,6 +21,16 @@ jobs:
       - name: Build (CGO_ENABLED=0)
         run: CGO_ENABLED=0 go build ./...
 
+      # Keep the nvolt_dev-tagged maintenance subcommands (`pkcs11 delete`/
+      # `relabel`, dev-channel binaries only) compiling. They ship in dev builds,
+      # so a break must fail CI here rather than surface only at release time.
+      # The pkcs11 loader is purego (cgo-free), so the windows cross-target
+      # compiles without a C toolchain.
+      - name: Build nvolt_dev pkcs11 code (linux + windows cross)
+        run: |
+          CGO_ENABLED=0 go build -tags "pkcs11 nvolt_dev" ./...
+          GOOS=windows CGO_ENABLED=0 go build -tags "pkcs11 nvolt_dev" ./...
+
       # Strictly vet the new/feature packages added for PKCS#11/YubiKey
       # support. These are vet-clean, so this must pass with zero findings.
       - name: Vet feature packages

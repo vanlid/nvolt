@@ -848,11 +848,37 @@ Example:
 }
 
 // runPKCS11Import opens a session on the named token, logs in, and imports an
-// RSA private key read from keyFile via C_CreateObject.
+// RSA private key read from keyFile via C_CreateObject. Its --label / --id
+// handling and success/next-step output are IDENTICAL to runPKCS11Generate — the
+// two commands differ only in where the key comes from (created on-card vs loaded
+// from a PEM): label defaults to "nvolt", an omitted --id auto-assigns the next
+// free CKA_ID (an explicit --id that collides is rejected), and on success it
+// prints the chosen label+id plus the copy-paste `nvolt init --pkcs11` line.
 func runPKCS11Import(module, token, label, idHex, keyFile, pinMode string) error {
-	if token == "" || keyFile == "" {
-		return fmt.Errorf("--token and --privkey are required")
+	if token == "" {
+		return fmt.Errorf("no PKCS#11 token specified; use --token")
 	}
+	if keyFile == "" {
+		return fmt.Errorf("no private key specified; use --privkey")
+	}
+	if label == "" {
+		label = "nvolt"
+	}
+	// An explicit --id must be valid, non-empty hex. An omitted --id (idHex == "")
+	// is auto-picked from the token's free id space once we can see its keys —
+	// exactly as runPKCS11Generate does.
+	var explicitID []byte
+	if idHex != "" {
+		decoded, derr := hex.DecodeString(idHex)
+		if derr != nil {
+			return fmt.Errorf("invalid --id (must be hex, e.g. 03): %w", derr)
+		}
+		if len(decoded) == 0 {
+			return fmt.Errorf("invalid --id: decodes to empty; omit --id to auto-assign, or pass hex like 03")
+		}
+		explicitID = decoded
+	}
+
 	pemData, err := os.ReadFile(keyFile)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", keyFile, err)
@@ -863,10 +889,6 @@ func runPKCS11Import(module, token, label, idHex, keyFile, pinMode string) error
 	}
 	if priv.N.BitLen() < 2048 {
 		return fmt.Errorf("RSA key is %d bits; minimum 2048 required", priv.N.BitLen())
-	}
-	id, err := hex.DecodeString(idHex)
-	if err != nil {
-		return fmt.Errorf("invalid --id hex %q: %w", idHex, err)
 	}
 
 	m, err := pkcs11.Open(module)
@@ -901,17 +923,42 @@ func runPKCS11Import(module, token, label, idHex, keyFile, pinMode string) error
 		}
 	}
 
+	// Resolve the key id: honor an explicit --id (rejecting a collision with an
+	// existing key), or auto-pick the lowest unused single-byte id on the token —
+	// identical to runPKCS11Generate.
+	existing := sess.ListKeyIDs()
+	id := explicitID
+	if id == nil {
+		id = nextFreeKeyID(existing)
+		idHex = hex.EncodeToString(id)
+	} else if containsID(existing, id) {
+		return fmt.Errorf("a key with id %s already exists on token %q; pass a different --id", idHex, token)
+	}
+
 	if _, err := sess.ImportRSAPrivateKey(label, id, priv); err != nil {
 		return err
 	}
-	// ui.Success -> ui.Info double-formats (see runPKCS11Generate above):
-	// escape "%" -> "%%" on the user-controlled token before display. The
-	// ui.Verbose calls below are single-pass Printf (format+args, no
-	// re-parse), so label needs no such escaping when passed as a %s
-	// argument -- escaping it here would print a literal "%%" instead of "%".
-	ui.Success("Imported RSA key onto token %s", strings.ReplaceAll(token, "%", "%%"))
-	ui.Verbose("  Label: %s", label)
-	ui.Verbose("  ID: %x", id)
+
+	// Same headline + next-step block as runPKCS11Generate. ui.Success
+	// double-formats (Sprintf then Info re-parses), so the user-controlled
+	// token/label are "%"->"%%" escaped; idHex is hex-only and the bit length an
+	// int, so both are safe unescaped.
+	ui.Success("Imported RSA-%d key  label=%s  id=%s  onto token %s",
+		priv.N.BitLen(),
+		strings.ReplaceAll(label, "%", "%%"),
+		idHex,
+		strings.ReplaceAll(token, "%", "%%"))
+
+	// Point the user at how to adopt this exact key as the machine identity.
+	// ui.Info is single-pass Printf (format+args), so module and the "%"-bearing
+	// pkcs11 URI survive literally as %s arguments with no escaping.
+	uri := fmt.Sprintf("pkcs11:token=%s;id=%s;type=private",
+		pctEncodePKCS11Attr(token), pctEncodeID(id))
+	ui.Info("Use this key as this machine's identity:")
+	ui.Info("  nvolt init --pkcs11 --pkcs11-module %s --pkcs11-uri '%s'", module, uri)
+
+	ui.Verbose("  Bits: %d", priv.N.BitLen())
+
 	return nil
 }
 
@@ -931,13 +978,11 @@ func init() {
 	pkcs11Cmd.AddCommand(pkcs11ImportCmd)
 	pkcs11ImportCmd.Flags().StringVar(&pkcs11ImportModule, "pkcs11-module", "", "Path to PKCS#11 module (.so); autodetected if omitted")
 	pkcs11ImportCmd.Flags().StringVar(&pkcs11ImportToken, "token", "", "Token label to import the key onto (required)")
-	pkcs11ImportCmd.Flags().StringVar(&pkcs11ImportLabel, "label", "", "CKA_LABEL for the imported key (required)")
-	pkcs11ImportCmd.Flags().StringVar(&pkcs11ImportID, "id", "", "CKA_ID for the imported key, hex (e.g. 03) (required)")
+	pkcs11ImportCmd.Flags().StringVar(&pkcs11ImportLabel, "label", "nvolt", "CKA_LABEL for the imported key")
+	pkcs11ImportCmd.Flags().StringVar(&pkcs11ImportID, "id", "", "CKA_ID for the imported key, hex (e.g. 03); auto-assigned (next free id) if omitted")
 	pkcs11ImportCmd.Flags().StringVar(&pkcs11ImportFile, "privkey", "", "Path to the RSA private key PEM to import (required)")
 	pkcs11ImportCmd.Flags().StringVar(&pkcs11ImportPinMode, "pkcs11-pin-mode", "prompt", "How to obtain the PIN: prompt, env, or none")
 	_ = pkcs11ImportCmd.MarkFlagRequired("token")
-	_ = pkcs11ImportCmd.MarkFlagRequired("label")
-	_ = pkcs11ImportCmd.MarkFlagRequired("id")
 	_ = pkcs11ImportCmd.MarkFlagRequired("privkey")
 
 	rootCmd.AddCommand(pkcs11Cmd)

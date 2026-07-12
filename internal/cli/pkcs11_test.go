@@ -338,15 +338,13 @@ func TestResolveEnrollTargetNonInteractiveErrorsWithoutHanging(t *testing.T) {
 // modulus, proving the import round-trips through the real PKCS#11 FFI path
 // (not just an in-process mock).
 //
-// This deliberately does not use pkcs11.ListTokensAndKeys: that function
-// opens its discovery session without logging in, and ImportRSAPrivateKey
-// creates a CKA_PRIVATE=true object with no matching public-key object, so
-// on SoftHSM the imported key is invisible pre-login regardless of whether
-// the import worked — asserting via ListTokensAndKeys would either be
-// vacuously true (satisfied by the two pre-seeded ids 01/02 from
-// hsmtest.Provision) or, if scoped to id 0x09, always false. Logging in and
-// calling FindRSAPrivateKey(id) instead targets exactly the key this test
-// imports, which the pre-seeded fixture keys (ids 01, 02) cannot satisfy.
+// This logs in and calls FindRSAPrivateKey(id) rather than the no-login
+// pkcs11.ListTokensAndKeys: it targets exactly the PRIVATE (decryption-capable,
+// CKA_PRIVATE=true) object for id 0x09 — which the pre-seeded fixture keys
+// (ids 01, 02) cannot satisfy — proving the private half round-trips through the
+// real FFI path. Pre-login visibility of the imported key (its public half, now
+// created by ImportRSAPrivateKey) is covered separately by
+// TestPKCS11ImportKeyVisiblePreLogin.
 func TestPKCS11ImportCreatesUsableKey(t *testing.T) {
 	mod := hsmtest.Provision(t)
 	t.Setenv("NVOLT_PKCS11_PIN", "1234")
@@ -398,6 +396,53 @@ func TestPKCS11ImportCreatesUsableKey(t *testing.T) {
 	}
 	if pub.N.Cmp(priv.PublicKey.N) != 0 {
 		t.Fatalf("imported key modulus mismatch: token key is not the key that was imported")
+	}
+}
+
+// TestPKCS11ImportKeyVisiblePreLogin proves the real bug fix: after import, the
+// key is discoverable WITHOUT logging in, exactly like a generated key. Import
+// now creates a CKO_PUBLIC_KEY object alongside the CKA_PRIVATE private object,
+// so pkcs11.ListTokensAndKeys — which opens its discovery session with no
+// C_Login — reports the imported id. Scoping the assertion to the specific
+// imported id (0x07, distinct from the pre-seeded 01/02) makes it fail if the
+// public object were missing (the pre-fix behavior). Skipped unless
+// NVOLT_TEST_PKCS11_MODULE is set.
+func TestPKCS11ImportKeyVisiblePreLogin(t *testing.T) {
+	mod := hsmtest.Provision(t)
+	t.Setenv("NVOLT_PKCS11_PIN", "1234")
+	dir := t.TempDir()
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pemBytes, err := nvcrypto.EncodePrivateKeyPEM(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(dir, "k.pem")
+	if err := os.WriteFile(keyPath, pemBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runPKCS11Import(mod, "nvolt-test", "imported", "07", keyPath, "env"); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+
+	// No-login discovery must now see id 0x07.
+	tokens, err := pkcs11.ListTokensAndKeys(mod)
+	if err != nil {
+		t.Fatalf("ListTokensAndKeys: %v", err)
+	}
+	found := false
+	for _, tok := range tokens {
+		for _, k := range tok.Keys {
+			if len(k.ID) == 1 && k.ID[0] == 0x07 {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("imported key id 0x07 not visible pre-login; import must create a public-key object")
 	}
 }
 

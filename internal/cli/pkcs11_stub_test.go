@@ -17,21 +17,33 @@ import (
 // real, always-compiled helpers: they register/parse the shared --pkcs11*
 // flags in every build (see TestSharedPKCS11FlagsArePrefixed in
 // flagname_test.go), so init/join keep working unchanged when --pkcs11 is
-// not requested. What this build stubs out (pkcs11_stub.go) is the deeper
-// module/URI resolution pkcs11OptsFromFlags delegates to
-// (resolveEnrollTarget, defined for real in the tag-gated pkcs11.go), so
-// asking for --pkcs11 here surfaces errNoPKCS11 instead of silently
-// proceeding. Calling pkcs11OptsFromFlags(nil) directly would panic (it
-// calls cmd.Flags()), so this test drives it the way callers really do: a
-// *cobra.Command with the shared flags registered and --pkcs11 set.
+// not requested. pkcs11OptsFromFlags now only CAPTURES the raw flags (no longer
+// resolves them), so asking for --pkcs11 no longer errors there; the deeper
+// module/URI resolution stubbed out in this build (resolveEnrollTarget in
+// pkcs11_stub.go, real in the tag-gated pkcs11.go) is reached lazily by
+// ensurePKCS11MachineInitialized's enroll branch. This test drives that path:
+// with an isolated (empty) NVOLT config the machine reads as uninitialized, so
+// ensurePKCS11MachineInitialized enrolls, hits the stub, and surfaces
+// errNoPKCS11 instead of silently proceeding.
 func TestPKCS11UnsupportedInDefaultBuild(t *testing.T) {
+	// Isolated, empty config dir -> no machine identity -> enroll branch.
+	t.Setenv("NVOLT_CONFIG", t.TempDir())
+
 	cmd := &cobra.Command{}
 	addPKCS11EnrollFlags(cmd)
 	if err := cmd.Flags().Set("pkcs11", "true"); err != nil {
 		t.Fatalf("set --pkcs11: %v", err)
 	}
 
-	_, err := pkcs11OptsFromFlags(cmd)
+	opts, err := pkcs11OptsFromFlags(cmd)
+	if err != nil {
+		t.Fatalf("pkcs11OptsFromFlags: unexpected error %v", err)
+	}
+	if opts == nil {
+		t.Fatal("pkcs11OptsFromFlags: want non-nil opts when --pkcs11 is set")
+	}
+
+	err = ensurePKCS11MachineInitialized(opts)
 	if err == nil || !strings.Contains(err.Error(), "not built with PKCS#11") {
 		t.Fatalf("want 'not built with PKCS#11' error, got %v", err)
 	}
