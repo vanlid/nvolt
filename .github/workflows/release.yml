@@ -278,23 +278,36 @@ jobs:
           path: ${{ matrix.output }}
           retention-days: 1
 
-      # Publish the raw wolfPKCS11 module for the Windows targets as a standalone
-      # downloadable DLL (it is otherwise only embedded inside the .exe). This is
-      # the artifact to validate on real Windows/TPM hardware: it is a
-      # self-contained wolfSSL+wolfTPM+wolfPKCS11 DLL whose runtime deps are
-      # Windows system DLLs only (tbs.dll for the TPM, kernel32, ws2_32, crypt32,
-      # advapi32, the CRT) — no libgcc/libwinpthread/vcruntime. See
-      # build/pkcs11/build-module.sh (the `windows-*` CMake branch).
-      - name: Stage standalone wolfPKCS11 DLL (windows)
-        if: matrix.variant == 'pkcs11' && startsWith(matrix.pkcs11_target, 'windows-')
-        run: cp internal/pkcs11/dist/module.bin "wolfpkcs11-${{ matrix.pkcs11_target }}.dll"
+      # Publish the raw wolfPKCS11 module (the exact bytes embedded into module.bin)
+      # as a standalone, sortably-named download for every TPM target — a
+      # self-contained wolfSSL+wolfTPM+wolfPKCS11 module useful to anyone wanting a
+      # TPM-backed PKCS#11 provider for other apps (p11-kit, ssh PKCS11Provider,
+      # the OpenSSL pkcs11 provider, ...), not just nvolt's embedded loader. Its
+      # only runtime deps are system libraries (Windows: tbs.dll for the TPM,
+      # kernel32, ws2_32, crypt32, advapi32, the CRT — no libgcc/winpthread/
+      # vcruntime; Linux: libc/libm). GPL NOTICE is generated in the release job.
+      - name: Stage standalone wolfPKCS11 module
+        if: matrix.variant == 'pkcs11' && matrix.pkcs11_target != ''
+        env:
+          GOOS: ${{ matrix.goos }}
+          TARGET: ${{ matrix.pkcs11_target }}
+        run: |
+          set -euo pipefail
+          case "$GOOS" in
+            windows) EXT=dll ;;
+            linux)   EXT=so ;;
+            darwin)  EXT=dylib ;;
+            *)       EXT=bin ;;
+          esac
+          cp internal/pkcs11/dist/module.bin "wolfpkcs11-${TARGET}.${EXT}"
+          echo "MODULE_ARTIFACT=wolfpkcs11-${TARGET}.${EXT}" >> "$GITHUB_ENV"
 
-      - name: Upload standalone wolfPKCS11 DLL (windows)
-        if: matrix.variant == 'pkcs11' && startsWith(matrix.pkcs11_target, 'windows-')
+      - name: Upload standalone wolfPKCS11 module
+        if: matrix.variant == 'pkcs11' && matrix.pkcs11_target != ''
         uses: actions/upload-artifact@v4
         with:
-          name: wolfpkcs11-${{ matrix.pkcs11_target }}.dll
-          path: wolfpkcs11-${{ matrix.pkcs11_target }}.dll
+          name: ${{ env.MODULE_ARTIFACT }}
+          path: ${{ env.MODULE_ARTIFACT }}
           retention-days: 1
 
   upload-to-r2:
@@ -379,10 +392,39 @@ jobs:
 
       - name: Collect binaries + checksums
         run: |
+          set -euo pipefail
           mkdir -p upload
           find ./binaries -type f -exec mv {} ./upload/ \;
           cp install.sh upload/install.sh
           chmod +x upload/install.sh
+
+          # GPL hygiene for the standalone wolfpkcs11-<os>-<arch>.{so,dll} modules:
+          # wolfSSL / wolfTPM / wolfPKCS11 are GPLv2. Emit one NOTICE covering all
+          # targets, with the pinned versions (single source of truth: versions.env)
+          # and a pointer to the build recipe as corresponding source.
+          # shellcheck source=build/pkcs11/versions.env
+          source build/pkcs11/versions.env
+          cat > upload/wolfpkcs11-NOTICE.txt <<EOF
+          The standalone wolfpkcs11-<os>-<arch>.{so,dll} modules published here are
+          self-contained PKCS#11 providers with wolfSSL and wolfTPM statically
+          linked into wolfPKCS11 (TPM 2.0 backed; Windows uses the native TBS API).
+
+          Components and pinned versions:
+            wolfSSL     ${WOLFSSL_TAG}      https://github.com/wolfSSL/wolfssl
+            wolfTPM     ${WOLFTPM_TAG}      https://github.com/wolfSSL/wolfTPM
+            wolfPKCS11  ${WOLFPKCS11_TAG}   https://github.com/wolfSSL/wolfPKCS11
+
+          License: GPLv2 (GNU General Public License, version 2). Each component is
+          distributed under the terms of the GPLv2; see each upstream repository for
+          the full license text and COPYING file. (wolfSSL additionally offers
+          commercial licensing.)
+
+          Corresponding source / build recipe: these modules are reproducible from
+          the pinned tags above with build/pkcs11/build-module.sh in the
+          nvolt-pkcs11 repository, which fetches each component at its tag and links
+          them into the module.
+          EOF
+
           (cd upload && sha256sum * > SHA256SUMS)
 
       - name: Publish to GitHub Releases
