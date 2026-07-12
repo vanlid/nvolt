@@ -150,12 +150,16 @@ cd "$WORK/wolfPKCS11"
   --disable-examples --with-wolfcrypt="$PREFIX" \
   CPPFLAGS="-I$PREFIX/include" CFLAGS="-DWOLFPKCS11_TPM_STORE -I$PREFIX/include" \
   LDFLAGS="-L$PREFIX/lib"
-# On Windows, wolfPKCS11's examples #include <dlfcn.h> (Unix dlopen), which mingw
-# lacks, and --disable-examples doesn't stop `make all` from building them. We
-# only need the library (the module we embed), so build just that target there.
-# Other targets keep `make all` (examples compile fine and this stays a no-op).
+# On Windows, wolfPKCS11's examples #include <dlfcn.h> (Unix dlopen, absent on
+# mingw), and --disable-examples doesn't stop `make all` building them — so build
+# only the library (the module we embed). Its sources also use
+# __attribute__((visibility)), unsupported on mingw (Windows uses dllexport),
+# which wolfPKCS11's own -Werror makes fatal. `make CFLAGS=` overrides configure's
+# CFLAGS, so re-add its -D/-I and drop -Werror; -include unistd.h mirrors the
+# wolfSSL fix. Other targets keep plain `make all` unchanged.
 if [[ "$HOST_TRIPLE" == *mingw* ]]; then
-  make -j"$JOBS" src/libwolfpkcs11.la
+  make -j"$JOBS" src/libwolfpkcs11.la \
+    CFLAGS="-g -O2 -DWOLFPKCS11_TPM_STORE -I$PREFIX/include -include unistd.h -Wno-error -Wno-attributes"
 else
   make -j"$JOBS"
 fi
