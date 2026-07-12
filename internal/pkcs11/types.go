@@ -5,6 +5,17 @@ import (
 	"unsafe"
 )
 
+// DiscoveredModule describes one PKCS#11 provider found by DetectModules.
+// Source records how it was discovered ("p11-kit", "path", "registry",
+// "embedded" or "builtin") so callers can label and order the results
+// sensibly. It lives here (untagged) rather than beside a loader-specific
+// DetectModules because it is a plain data type shared across build variants.
+type DiscoveredModule struct {
+	Path   string
+	Label  string
+	Source string
+}
+
 // CKRV is a PKCS#11 CK_RV return code.
 type CKRV uintptr
 

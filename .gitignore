@@ -37,3 +37,8 @@ test_vault/
 CLD.md
 TASKS.md
 .nvolt/
+
+# Statically-linked wolfPKCS11 archives + headers (produced by
+# build/pkcs11/build-module.sh with STATIC_ARCHIVES, consumed by cgo under the
+# wolfpkcs11_static build tag)
+internal/pkcs11/dist/static/
