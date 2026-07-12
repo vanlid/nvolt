@@ -31,6 +31,7 @@
 - **No Authentication**: Uses Git for access control
 - **Cryptographically Enforced**: Access control through wrapped keys
 - **Git-Native**: `.nvolt/` directories act as encrypted, committed `.env` replacements
+- **Hardware-Key Support**: Back a machine identity with a YubiKey or other PKCS#11 token - the private key never leaves the device
 - **$0/month**: Free forever, no usage limits
 
 ## Why nvolt?
@@ -131,6 +132,7 @@ nvolt init --repo org/secrets-repo
 **Flags:**
 
 - `--repo` - GitHub repository URL for global vault
+- `--pkcs11` - Back this machine's identity with a PKCS#11 hardware token instead of a software keypair (see [Using a hardware key](#using-a-hardware-key-pkcs11))
 
 ---
 
@@ -151,6 +153,7 @@ nvolt join --repo org/secrets-repo
 **Flags:**
 
 - `--repo` - GitHub repository URL for global vault
+- `--pkcs11` - Back this machine's identity with a PKCS#11 hardware token instead of a software keypair (see [Using a hardware key](#using-a-hardware-key-pkcs11))
 
 **Note:** After joining, you'll need someone with push access to grant your machine access to specific environments using `nvolt machine grant <your-machine-id>`.
 
@@ -303,6 +306,67 @@ nvolt sync --rotate
 
 - `--rotate` - Rotate the master encryption key
 
+---
+
+### `nvolt pkcs11`
+
+Discover and use RSA keys stored on a PKCS#11 hardware token (YubiKey, SoftHSM, etc.).
+
+```bash
+# List RSA keys visible on the token
+nvolt pkcs11 list
+
+# Enroll an on-card key as a *new* machine's identity (fresh init/join):
+# with no flags, this walks you through picking a token and key;
+# or name the key directly with --pkcs11-uri:
+nvolt init --pkcs11 --pkcs11-uri 'pkcs11:token=my-yubikey;id=%01;type=private'
+
+# Already have a machine? Swap its existing identity onto the same
+# key's hardware/software backing with `nvolt rebind` instead:
+nvolt rebind --pkcs11 --pkcs11-uri 'pkcs11:token=my-yubikey;id=%01;type=private'
+
+# Generate a new RSA keypair on the token (--id auto-assigns; --label defaults to nvolt)
+nvolt pkcs11 generate --token my-yubikey
+
+# Import an existing RSA private key (PKCS#1 or PKCS#8) onto the token
+nvolt pkcs11 import --token my-yubikey --privkey key.pem
+```
+
+**Flags:**
+
+- `--pkcs11-module` - Path to the PKCS#11 module (`.so` on Linux/macOS, `.dll` on Windows). Optional: nvolt autodetects common OpenSC/YubiKey locations, so you only need this (or `NVOLT_PKCS11_MODULE`) to override
+- `--pkcs11-uri` - PKCS#11 URI of the RSA key to enroll (required for `init/join --pkcs11` and `rebind --pkcs11` when not picked interactively)
+- `--pkcs11-pin-mode` - How to obtain the PIN: `prompt`, `env`, or `none` (default: `prompt`)
+
+## Using a hardware key (PKCS#11)
+
+nvolt can keep this machine's private key on a hardware token (like a YubiKey) instead of in a file. The key is created on the device and never leaves it — nvolt only sees the public key, and the token itself does the decryption.
+
+A typical setup looks like this:
+
+```bash
+nvolt pkcs11 list      # show the tokens and keys nvolt can find
+nvolt init --pkcs11    # pick one and make it this machine's identity
+nvolt push             # push/pull/run then work as usual — the token unwraps your secrets
+```
+
+**Finding the module.** nvolt talks to the token through a PKCS#11 module — a `.so` file on Linux/macOS or a `.dll` on Windows, installed by OpenSC or your YubiKey software. nvolt checks the common install locations automatically, so you usually don't pass anything. If it can't find yours, point it at the file:
+
+- Linux/macOS: `--pkcs11-module /path/to/opensc-pkcs11.so`
+- Windows: `--pkcs11-module "C:\Program Files\OpenSC Project\OpenSC\pkcs11\opensc-pkcs11.dll"`
+
+Or set `NVOLT_PKCS11_MODULE` once in your shell profile so you never type it again.
+
+**Nothing shows up?** You need OpenSC (or your YubiKey vendor's tools) installed so a module exists on the machine:
+
+- Linux (Debian/Ubuntu): `sudo apt install opensc pcscd` — `pcscd` is the service that lets the system see the card
+- macOS: `brew install opensc`
+- Windows: install OpenSC from its [releases page](https://github.com/OpenSC/OpenSC/releases), or run `winget install OpenSC.OpenSC`
+
+Then plug in the token and run `nvolt pkcs11 list` again. (`pkcs11-tool --list-slots`, which comes with OpenSC, is a quick way to confirm the card is detected at all.)
+
+**Entering your PIN.** By default nvolt asks for the token PIN and hides it as you type. For automation, use `--pkcs11-pin-mode env` to read it from `NVOLT_PKCS11_PIN`, or `--pkcs11-pin-mode none` for tokens that don't require a PIN.
+
 ## Security
 
 nvolt uses industry-standard cryptography to protect your secrets:
@@ -348,6 +412,8 @@ nvolt/
 │   ├── cli/            # CLI commands
 │   ├── crypto/         # Cryptographic operations
 │   ├── vault/          # Vault management
+│   ├── keyprovider/    # Machine key source: software key or PKCS#11 token
+│   ├── pkcs11/         # PKCS#11 (Cryptoki) client — compiled under the `pkcs11` build tag
 │   ├── git/            # Git operations
 │   └── config/         # Configuration management
 └── pkg/

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/iluxav/nvolt/internal/keyprovider"
 	"github.com/iluxav/nvolt/internal/ui"
 	"github.com/iluxav/nvolt/internal/vault"
 	"github.com/spf13/cobra"
@@ -198,19 +199,28 @@ func runVaultVerify() error {
 	if err != nil {
 		errors = append(errors, fmt.Sprintf("Cannot load current machine info: %v", err))
 	} else {
-		ui.Success(fmt.Sprintf("Current machine: %s", ui.Cyan(currentMachine.ID)))
+		ui.Success("%s", fmt.Sprintf("Current machine: %s", ui.Cyan(currentMachine.ID)))
 
 		// List environments to check access
 		envDirs, err := vault.ListDirs(paths.Secrets)
 		if err == nil && len(envDirs) > 0 {
 			ui.Info("Checking access to environments...")
-			for _, envDir := range envDirs {
-				envName := vault.GetDirName(envDir)
-				_, err := vault.UnwrapMasterKey(paths, envName)
-				if err != nil {
-					warnings = append(warnings, fmt.Sprintf("Current machine cannot unwrap master key for '%s': %v", envName, err))
-				} else {
-					ui.Info(fmt.Sprintf("  %s Can access '%s'", ui.BrightGreen("✓"), ui.Cyan(envName)))
+			// Load this machine's decrypter once for all environment checks.
+			// A failure here (e.g. no key / token unavailable) is a warning,
+			// not fatal: the rest of the vault report should still render.
+			dec, closeDec, derr := keyprovider.LoadDecrypter()
+			if derr != nil {
+				warnings = append(warnings, fmt.Sprintf("Cannot load machine key to check environment access: %v", derr))
+			} else {
+				defer func() { _ = closeDec() }()
+				for _, envDir := range envDirs {
+					envName := vault.GetDirName(envDir)
+					_, err := vault.UnwrapMasterKey(paths, envName, dec)
+					if err != nil {
+						warnings = append(warnings, fmt.Sprintf("Current machine cannot unwrap master key for '%s': %v", envName, err))
+					} else {
+						ui.Info(fmt.Sprintf("  %s Can access '%s'", ui.BrightGreen("✓"), ui.Cyan(envName)))
+					}
 				}
 			}
 		}
@@ -222,7 +232,7 @@ func runVaultVerify() error {
 	if err != nil {
 		errors = append(errors, fmt.Sprintf("Cannot list machines: %v", err))
 	} else {
-		ui.Success(fmt.Sprintf("Found %d machine(s)", len(machines)))
+		ui.Success("%s", fmt.Sprintf("Found %d machine(s)", len(machines)))
 
 		// Get list of environments
 		envDirs, err := vault.ListDirs(paths.Secrets)
@@ -294,7 +304,7 @@ func runVaultVerify() error {
 			}
 		}
 
-		ui.Success(fmt.Sprintf("Found %d wrapped key(s) across all environments", totalWrappedKeys))
+		ui.Success("%s", fmt.Sprintf("Found %d wrapped key(s) across all environments", totalWrappedKeys))
 	}
 
 	// Check secrets
@@ -312,7 +322,7 @@ func runVaultVerify() error {
 			}
 			totalSecrets += len(secretFiles)
 		}
-		ui.Success(fmt.Sprintf("Found %d secret(s) across %d environment(s)", totalSecrets, len(envDirs)))
+		ui.Success("%s", fmt.Sprintf("Found %d secret(s) across %d environment(s)", totalSecrets, len(envDirs)))
 	}
 
 	// Print summary

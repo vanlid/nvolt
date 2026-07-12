@@ -1,6 +1,7 @@
 package vault
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -35,6 +36,34 @@ func TestWriteFileAtomic(t *testing.T) {
 	tmpFile := testFile + ".tmp"
 	if FileExists(tmpFile) {
 		t.Error("Temporary file should have been removed")
+	}
+}
+
+func TestPermsEqual(t *testing.T) {
+	cases := []struct {
+		name             string
+		actual, expected fs.FileMode
+		goos             string
+		want             bool
+	}{
+		// Unix: exact match required.
+		{"unix exact match", 0o644, 0o644, "linux", true},
+		{"unix mismatch rejected", 0o666, 0o644, "linux", false},
+		{"unix private key exact", 0o600, 0o600, "darwin", true},
+		// Windows: a writable file always reports 0666, so 0644/0600 expectations
+		// must both be satisfied by an on-disk 0666 (the enroll-crash scenario).
+		{"windows writable matches 0644", 0o666, 0o644, "windows", true},
+		{"windows writable matches 0600", 0o666, 0o600, "windows", true},
+		// Windows: read-only expectation must still be honored (read-only bit differs).
+		{"windows readonly not writable", 0o666, 0o444, "windows", false},
+		{"windows readonly matches readonly", 0o444, 0o444, "windows", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := permsEqual(c.actual, c.expected, c.goos); got != c.want {
+				t.Errorf("permsEqual(%o, %o, %q) = %v, want %v", c.actual, c.expected, c.goos, got, c.want)
+			}
+		})
 	}
 }
 

@@ -1,0 +1,225 @@
+package pkcs11
+
+import (
+	"crypto/rsa"
+	"fmt"
+	"path/filepath"
+	"strings"
+
+	nvcrypto "github.com/iluxav/nvolt/internal/crypto"
+)
+
+// DiscoveredModule describes one PKCS#11 provider found by DetectModules.
+// Source records how it was discovered ("p11-kit", "path" or "registry") so
+// callers can label and order the results sensibly. It lives here (untagged)
+// rather than beside a loader-specific DetectModules because it is a plain
+// data type shared across build variants.
+//
+// Name is the concise, user-facing label shown by default in `pkcs11 list` and
+// the enrollment picker (e.g. "OpenSC"); Label carries the technical detail
+// (the module basename) surfaced only at -v alongside Path/Source. Path is
+// never displayed at the default level and remains the stored/CLI identifier,
+// unchanged by the display split.
+type DiscoveredModule struct {
+	Path   string
+	Name   string
+	Label  string
+	Source string
+}
+
+// friendlyModuleName maps a PKCS#11 module's file basename to a short,
+// user-facing name for the picker and `pkcs11 list` (e.g. "opensc-pkcs11.so"
+// -> "OpenSC"), so the default display carries no path or vendor library name.
+// An unrecognized module falls back to its basename unchanged.
+func friendlyModuleName(basename string) string {
+	lower := strings.ToLower(filepath.Base(basename))
+	switch {
+	case strings.Contains(lower, "opensc"):
+		return "OpenSC"
+	case strings.Contains(lower, "ykcs11"):
+		return "YubiKey"
+	case strings.Contains(lower, "p11-kit"):
+		return "p11-kit"
+	case strings.Contains(lower, "softhsm"):
+		return "SoftHSM"
+	default:
+		return filepath.Base(basename)
+	}
+}
+
+// CKRV is a PKCS#11 CK_RV return code.
+type CKRV uintptr
+
+const (
+	CKR_OK                     CKRV = 0x00000000
+	CKR_ARGUMENTS_BAD          CKRV = 0x00000007
+	CKR_FUNCTION_NOT_SUPPORTED CKRV = 0x00000054
+	CKR_MECHANISM_INVALID      CKRV = 0x00000070
+)
+
+// Object classes, key types, session/user flags, mechanisms.
+const (
+	CKO_PUBLIC_KEY     uintptr = 2
+	CKO_PRIVATE_KEY    uintptr = 3
+	CKK_RSA            uintptr = 0
+	CKF_RW_SESSION     uintptr = 2
+	CKF_SERIAL_SESSION uintptr = 4
+	CKU_SO             uintptr = 0
+	CKU_USER           uintptr = 1
+	CKM_RSA_PKCS_OAEP  uintptr = 0x00000009
+	CKM_RSA_X_509      uintptr = 0x00000003
+	CKG_MGF1_SHA256    uintptr = 0x00000002
+	CKZ_DATA_SPECIFIED uintptr = 1
+	CKM_SHA256         uintptr = 0x00000250
+
+	CKM_RSA_PKCS_KEY_PAIR_GEN uintptr = 0x00000000
+)
+
+// CK_TOKEN_INFO.flags bits (Cryptoki 2.40 SS9.5.1) that drive PIN-handling
+// auto-detection: CKF_LOGIN_REQUIRED tells us whether C_Login is needed at
+// all, and CKF_PROTECTED_AUTHENTICATION_PATH tells us the reader/pinpad
+// collects the PIN out-of-band, so the application must call C_Login with a
+// NULL PIN rather than supplying one.
+const (
+	CKF_LOGIN_REQUIRED                uintptr = 0x00000004
+	CKF_PROTECTED_AUTHENTICATION_PATH uintptr = 0x00000100
+)
+
+// CK_TOKEN_INFO.flags bits (Cryptoki 2.40 §9.5.1) that drive blank-token
+// auto-initialization: CKF_TOKEN_INITIALIZED is set once the token has been
+// initialized (C_InitToken run), and CKF_USER_PIN_INITIALIZED is set once the
+// normal-user PIN has been established (C_InitPIN run). A token missing either
+// makes C_Login(CKU_USER) fail with CKR_USER_PIN_NOT_INITIALIZED, so nvolt
+// brings it up transparently before use (see Module.EnsureTokenInitialized).
+const (
+	CKF_TOKEN_INITIALIZED    uintptr = 0x00000400
+	CKF_USER_PIN_INITIALIZED uintptr = 0x00000008
+)
+
+// tokenNeedsInit reports whether a token's CK_TOKEN_INFO.flags indicate it must
+// be initialized before it can be used to create or use keys: either the token
+// itself has never been initialized (CKF_TOKEN_INITIALIZED clear) or its
+// normal-user PIN has never been set (CKF_USER_PIN_INITIALIZED clear). When
+// both bits are set the token is already live and must NEVER be re-initialized
+// (C_InitToken would wipe every key on it), so this returns false.
+func tokenNeedsInit(flags uintptr) bool {
+	return flags&CKF_TOKEN_INITIALIZED == 0 || flags&CKF_USER_PIN_INITIALIZED == 0
+}
+
+// Attribute types.
+const (
+	CKA_CLASS           uintptr = 0x00000000
+	CKA_KEY_TYPE        uintptr = 0x00000100
+	CKA_ID              uintptr = 0x00000102
+	CKA_LABEL           uintptr = 0x00000003
+	CKA_TOKEN           uintptr = 0x00000001
+	CKA_PRIVATE         uintptr = 0x00000002
+	CKA_SENSITIVE       uintptr = 0x00000103
+	CKA_ENCRYPT         uintptr = 0x00000104
+	CKA_DECRYPT         uintptr = 0x00000105
+	CKA_WRAP            uintptr = 0x00000106
+	CKA_UNWRAP          uintptr = 0x00000107
+	CKA_SIGN            uintptr = 0x00000108
+	CKA_VERIFY          uintptr = 0x0000010A
+	CKA_MODULUS         uintptr = 0x00000120
+	CKA_MODULUS_BITS    uintptr = 0x00000121
+	CKA_PUBLIC_EXPONENT uintptr = 0x00000122
+
+	CKA_PRIVATE_EXPONENT uintptr = 0x00000123
+	CKA_PRIME_1          uintptr = 0x00000124
+	CKA_PRIME_2          uintptr = 0x00000125
+	CKA_EXPONENT_1       uintptr = 0x00000126
+	CKA_EXPONENT_2       uintptr = 0x00000127
+	CKA_COEFFICIENT      uintptr = 0x00000128
+)
+
+func (r CKRV) String() string { return ckrvName(r) }
+
+// ckrvName renders a CKRV as a human-readable string, naming the codes nvolt
+// distinguishes and hex-formatting the rest.
+// ckrvNames maps common Cryptoki return values to their names, so errors read
+// as e.g. "CKR_PIN_INCORRECT" instead of a raw hex code.
+var ckrvNames = map[CKRV]string{
+	0x00:  "CKR_OK",
+	0x01:  "CKR_CANCEL",
+	0x05:  "CKR_GENERAL_ERROR",
+	0x06:  "CKR_FUNCTION_FAILED",
+	0x07:  "CKR_ARGUMENTS_BAD",
+	0x30:  "CKR_DEVICE_ERROR",
+	0x54:  "CKR_FUNCTION_NOT_SUPPORTED",
+	0x60:  "CKR_KEY_HANDLE_INVALID",
+	0x70:  "CKR_MECHANISM_INVALID",
+	0x71:  "CKR_MECHANISM_PARAM_INVALID",
+	0x82:  "CKR_OBJECT_HANDLE_INVALID",
+	0xA0:  "CKR_PIN_INCORRECT",
+	0xA1:  "CKR_PIN_INVALID",
+	0xA2:  "CKR_PIN_LEN_RANGE",
+	0xA3:  "CKR_PIN_EXPIRED",
+	0xA4:  "CKR_PIN_LOCKED",
+	0xB3:  "CKR_SESSION_HANDLE_INVALID",
+	0xB5:  "CKR_SESSION_READ_ONLY",
+	0xD0:  "CKR_TEMPLATE_INCOMPLETE",
+	0xD1:  "CKR_TEMPLATE_INCONSISTENT",
+	0xE0:  "CKR_TOKEN_NOT_PRESENT",
+	0xE2:  "CKR_TOKEN_WRITE_PROTECTED",
+	0x100: "CKR_USER_ALREADY_LOGGED_IN",
+	0x101: "CKR_USER_NOT_LOGGED_IN",
+	0x102: "CKR_USER_PIN_NOT_INITIALIZED",
+	0x103: "CKR_USER_TYPE_INVALID",
+}
+
+func ckrvName(r CKRV) string {
+	if name, ok := ckrvNames[r]; ok {
+		return name
+	}
+	return fmt.Sprintf("CKR_0x%08X", uintptr(r))
+}
+
+// KeyInfo describes an RSA key discovered on a token. Discovery runs without a
+// PIN, so on tokens that hide private objects until login (e.g. SoftHSM) the
+// data is read from the matching public-key object, which shares the same
+// CKA_ID/CKA_LABEL and modulus.
+type KeyInfo struct {
+	TokenLabel string
+	Label      string
+	ID         []byte
+	Bits       int
+	// Fingerprint is the "SHA256:<base64>" fingerprint of the key's RSA public
+	// half, computed the same way as a machine's identity fingerprint
+	// (crypto.GenerateFingerprint) so the two are directly comparable. It is
+	// best-effort: empty when the public key or exponent could not be read
+	// during no-login discovery.
+	Fingerprint string
+}
+
+// pubFingerprint computes the "SHA256:<base64>" fingerprint of an RSA public
+// key, delegating to crypto.GenerateFingerprint so a token key's fingerprint is
+// byte-for-byte comparable to a machine's identity fingerprint (shown as
+// "Fingerprint:" during init). Both loader builds (purego and cgo) share it.
+//
+// It is best-effort and returns "" rather than a misleading value when the key
+// material is not actually present: some tokens (e.g. wolfPKCS11) do not expose
+// CKA_MODULUS/CKA_PUBLIC_EXPONENT until the session logs in, so a no-login
+// discovery read yields a zero modulus/exponent. Fingerprinting that degenerate
+// key would produce a constant that is IDENTICAL for every such key — worse than
+// showing nothing, since a user could "match" two different keys — so a key
+// without a real modulus (BitLen 0) or exponent (<= 0) is reported as "".
+func pubFingerprint(pub *rsa.PublicKey) string {
+	if pub == nil || pub.N == nil || pub.N.BitLen() == 0 || pub.E <= 0 {
+		return ""
+	}
+	fp, err := nvcrypto.GenerateFingerprint(pub)
+	if err != nil {
+		return ""
+	}
+	return fp
+}
+
+// TokenListing describes one token seen by ListTokensAndKeys: the token's
+// label and whatever RSA keys are visible on it without a PIN. Keys is empty
+// (not omitted) for a token that has no RSA keys yet, so callers can render
+// the token as detected while pointing the user at how to create one.
+type TokenListing struct {
+	Label string
+	Keys  []KeyInfo
+}

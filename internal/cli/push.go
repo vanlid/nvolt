@@ -9,6 +9,7 @@ import (
 	"github.com/iluxav/nvolt/internal/config"
 	"github.com/iluxav/nvolt/internal/crypto"
 	"github.com/iluxav/nvolt/internal/git"
+	"github.com/iluxav/nvolt/internal/keyprovider"
 	"github.com/iluxav/nvolt/internal/ui"
 	"github.com/iluxav/nvolt/internal/vault"
 	"github.com/iluxav/nvolt/pkg/types"
@@ -147,7 +148,7 @@ func runPush(envFile, environment, project string, keyValues []string, dryRun bo
 	ui.Success("Master key wrapped for machines with access")
 
 	// Encrypt and save each secret
-	ui.Step(fmt.Sprintf("Encrypting %d secrets for environment '%s'", len(secrets), ui.Cyan(environment)))
+	ui.Step("%s", fmt.Sprintf("Encrypting %d secrets for environment '%s'", len(secrets), ui.Cyan(environment)))
 	for key, value := range secrets {
 		encrypted, err := vault.EncryptSecret(masterKey, value)
 		if err != nil {
@@ -163,7 +164,7 @@ func runPush(envFile, environment, project string, keyValues []string, dryRun bo
 		}
 	}
 
-	ui.Success(fmt.Sprintf("Successfully pushed %d secrets", len(secrets)))
+	ui.Success("%s", fmt.Sprintf("Successfully pushed %d secrets", len(secrets)))
 	ui.PrintKeyValue("  Environment", ui.Cyan(environment))
 	ui.PrintKeyValue("  Vault", ui.Gray(vaultPath))
 	ui.Section("Secrets encrypted:")
@@ -233,11 +234,15 @@ func unwrapMasterKey(paths *vault.Paths, environment string) ([]byte, error) {
 		return nil, fmt.Errorf("failed to parse wrapped key: %w", err)
 	}
 
-	// Load private key
-	privateKey, err := vault.LoadPrivateKey()
+	// Load this machine's decrypter (software PEM key or PKCS#11-backed token).
+	// keyprovider.LoadDecrypter is used rather than vault.LoadPrivateKey so a
+	// hardware-backed machine can unwrap at push time; closeDec finalizes the
+	// token session (no-op for software).
+	dec, closeDec, err := keyprovider.LoadDecrypter()
 	if err != nil {
-		return nil, fmt.Errorf("failed to load private key: %w", err)
+		return nil, fmt.Errorf("failed to load machine key: %w", err)
 	}
+	defer func() { _ = closeDec() }()
 
 	// Unwrap master key
 	wrappedKey, err := base64.StdEncoding.DecodeString(wrappedKeyData.WrappedKey)
@@ -245,14 +250,13 @@ func unwrapMasterKey(paths *vault.Paths, environment string) ([]byte, error) {
 		return nil, fmt.Errorf("failed to decode wrapped key: %w", err)
 	}
 
-	masterKey, err := crypto.UnwrapKey(privateKey, wrappedKey)
+	masterKey, err := crypto.UnwrapKey(dec, wrappedKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to unwrap master key: %w", err)
 	}
 
 	return masterKey, nil
 }
-
 
 func init() {
 	pushCmd.Flags().StringP("file", "f", "", "Environment file to encrypt")

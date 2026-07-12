@@ -9,6 +9,7 @@ import (
 
 	"github.com/iluxav/nvolt/internal/crypto"
 	"github.com/iluxav/nvolt/internal/git"
+	"github.com/iluxav/nvolt/internal/keyprovider"
 	"github.com/iluxav/nvolt/internal/ui"
 	"github.com/iluxav/nvolt/internal/vault"
 	"github.com/spf13/cobra"
@@ -69,6 +70,15 @@ func runPull(environment string, projects []string, write bool) error {
 		ui.Success("Repository up to date")
 	}
 
+	// Load this machine's decrypter ONCE for the whole pull: for a PKCS#11
+	// machine this opens a single token session (one PIN entry) reused across
+	// every project's unwrap, rather than one session per project.
+	dec, closeDec, err := keyprovider.LoadDecrypter()
+	if err != nil {
+		return fmt.Errorf("failed to load machine key: %w", err)
+	}
+	defer func() { _ = closeDec() }()
+
 	// Load and merge secrets from all projects
 	allSecrets := make(map[string]string)
 	for _, projectInfo := range projectsToLoad {
@@ -76,7 +86,7 @@ func runPull(environment string, projects []string, write bool) error {
 		paths := vault.GetVaultPaths(projectInfo.VaultPath, projectInfo.ProjectName)
 
 		// Unwrap master key for this project
-		masterKey, err := vault.UnwrapMasterKey(paths, environment)
+		masterKey, err := vault.UnwrapMasterKey(paths, environment, dec)
 		if err != nil {
 			return fmt.Errorf("failed to unwrap master key for project '%s': %w\nMake sure you have pushed secrets first", projectInfo.DisplayName, err)
 		}
@@ -91,7 +101,7 @@ func runPull(environment string, projects []string, write bool) error {
 
 		if len(secretFiles) == 0 {
 			crypto.ZeroBytes(masterKey)
-			ui.Warning(fmt.Sprintf("No secrets found for project '%s' in environment '%s'", projectInfo.DisplayName, environment))
+			ui.Warning("%s", fmt.Sprintf("No secrets found for project '%s' in environment '%s'", projectInfo.DisplayName, environment))
 			continue
 		}
 
@@ -134,7 +144,7 @@ func runPull(environment string, projects []string, write bool) error {
 		return fmt.Errorf("no secrets could be decrypted from any project")
 	}
 
-	ui.Success(fmt.Sprintf("Decrypted %d secrets from environment '%s'", len(allSecrets), ui.Cyan(environment)))
+	ui.Success("%s", fmt.Sprintf("Decrypted %d secrets from environment '%s'", len(allSecrets), ui.Cyan(environment)))
 
 	// Format output
 	output := vault.FormatEnvOutput(allSecrets)
@@ -151,7 +161,7 @@ func runPull(environment string, projects []string, write bool) error {
 			return fmt.Errorf("failed to write .env file: %w", err)
 		}
 
-		ui.Success(fmt.Sprintf("Written to %s", ui.Cyan(envFile)))
+		ui.Success("%s", fmt.Sprintf("Written to %s", ui.Cyan(envFile)))
 	} else {
 		// Print to stdout
 		ui.Section("Secrets:")

@@ -195,8 +195,8 @@ func TestSanitizeProjectName(t *testing.T) {
 		{"my_project", "my_project"},
 		{"my project", "my-project"},
 		{"my--project", "my-project"},
-		{"@org/project", "org-project"},  // Trims leading/trailing hyphens
-		{"project!", "project"},           // Trims trailing hyphens
+		{"@org/project", "org-project"}, // Trims leading/trailing hyphens
+		{"project!", "project"},         // Trims trailing hyphens
 		{"-project-", "project"},
 		{"My Cool Project!", "my-cool-project"},
 	}

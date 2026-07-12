@@ -29,17 +29,81 @@ This command will:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		repo, _ := cmd.Flags().GetString("repo")
 
-		return runInit(repo)
+		opts, err := pkcs11OptsFromFlags(cmd)
+		if err != nil {
+			return err
+		}
+
+		return runInit(repo, opts)
 	},
 }
 
-func runInit(repoSpec string) error {
+// pkcs11EnrollOpts carries the --pkcs11 enrollment parameters for init/join.
+// A nil *pkcs11EnrollOpts means --pkcs11 was not set (default software path).
+//
+// It holds the RAW, UNRESOLVED flag values. Module/URI resolution
+// (resolveEnrollTarget, which may prompt for a module/token/key) is deferred to
+// ensurePKCS11MachineInitialized's enroll branch: re-running init/join on an
+// already-enrolled machine reuses the existing identity WITHOUT resolving —
+// otherwise the user was asked to pick a module that is never used.
+type pkcs11EnrollOpts struct {
+	flagModule string
+	flagURI    string
+	pinMode    string
+}
+
+// addPKCS11EnrollFlags registers the shared --pkcs11/--pkcs11-module/
+// --pkcs11-uri/--pkcs11-pin-mode flags on init and join. The flag names
+// deliberately match the `nvolt pkcs11` subcommands so a given option reads
+// the same on every command.
+// There is intentionally no --force here: re-running init on an already-enrolled
+// PKCS#11 machine is idempotent, and replacing a software identity with a
+// hardware one (or vice versa) is done explicitly via `nvolt rebind --pkcs11`.
+func addPKCS11EnrollFlags(cmd *cobra.Command) {
+	cmd.Flags().Bool("pkcs11", false, "Back this machine's identity with a PKCS#11 token instead of a software keypair")
+	cmd.Flags().String("pkcs11-module", "", "Path to PKCS#11 module (.so) (with --pkcs11); autodetected if omitted")
+	cmd.Flags().String("pkcs11-uri", "", "PKCS#11 URI of the RSA key to enroll (with --pkcs11)")
+	cmd.Flags().String("pkcs11-pin-mode", "prompt", "How to obtain the PIN: prompt, env, or none (with --pkcs11)")
+}
+
+// pkcs11OptsFromFlags returns the enrollment options when --pkcs11 is set, or
+// nil when it is not (unchanged software init/join). It only CAPTURES the raw
+// flag values; it deliberately does NOT resolve the module/URI here. Resolution
+// (which can prompt for a module/token/key) is deferred to
+// ensurePKCS11MachineInitialized and runs only when a fresh enrollment is
+// actually needed — so re-running init/join on an already-enrolled machine
+// reuses the existing identity without ever prompting.
+func pkcs11OptsFromFlags(cmd *cobra.Command) (*pkcs11EnrollOpts, error) {
+	usePKCS11, _ := cmd.Flags().GetBool("pkcs11")
+	if !usePKCS11 {
+		return nil, nil
+	}
+	flagModule, _ := cmd.Flags().GetString("pkcs11-module")
+	flagURI, _ := cmd.Flags().GetString("pkcs11-uri")
+	pinMode, _ := cmd.Flags().GetString("pkcs11-pin-mode")
+	return &pkcs11EnrollOpts{flagModule: flagModule, flagURI: flagURI, pinMode: pinMode}, nil
+}
+
+func runInit(repoSpec string, pkcs11Opts *pkcs11EnrollOpts) error {
 	ui.PrintBanner("Initializing nvolt vault...")
 
-	// Step 1: Ensure machine keypair exists- If not, creates machine config
-	ui.Step("Checking machine keypair")
-	if err := EnsureMachineInitialized(); err != nil {
-		return fmt.Errorf("failed to initialize machine: %w", err)
+	// Step 1: Establish this machine's identity.
+	//
+	// --pkcs11 enrolls the on-card key as the identity (writing machine-info.json
+	// with NO software private key on disk). This must NOT fall through to
+	// EnsureMachineInitialized: that path keys off IsMachineInitialized(), which
+	// requires a software private_key.pem — absent by design for a hardware-backed
+	// machine — and would wrongly re-prompt to generate a software keypair.
+	// The default (software) path is unchanged.
+	if pkcs11Opts != nil {
+		if err := ensurePKCS11MachineInitialized(pkcs11Opts); err != nil {
+			return err
+		}
+	} else {
+		ui.Step("Checking machine keypair")
+		if err := EnsureMachineInitialized(); err != nil {
+			return fmt.Errorf("failed to initialize machine: %w", err)
+		}
 	}
 
 	// Load machine info
@@ -238,5 +302,6 @@ func initGlobalMode(repoSpec string) error {
 
 func init() {
 	initCmd.Flags().StringP("repo", "r", "", "GitHub repository (org/repo) for global mode")
+	addPKCS11EnrollFlags(initCmd)
 	rootCmd.AddCommand(initCmd)
 }

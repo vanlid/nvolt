@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"crypto/rsa"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"github.com/iluxav/nvolt/internal/config"
 	"github.com/iluxav/nvolt/internal/crypto"
 	"github.com/iluxav/nvolt/internal/git"
+	"github.com/iluxav/nvolt/internal/keyprovider"
 	"github.com/iluxav/nvolt/internal/ui"
 	"github.com/iluxav/nvolt/internal/vault"
 	"github.com/iluxav/nvolt/pkg/types"
@@ -22,19 +24,83 @@ var machineCmd = &cobra.Command{
 	Long:  `Add or remove machines from the vault access list.`,
 }
 
+var machineAddPubkeyFile string
+var machineAddPKCS11 bool
+var machineAddPKCS11Module string
+var machineAddPKCS11URI string
+
 var machineAddCmd = &cobra.Command{
 	Use:   "add [name]",
 	Short: "Add a new machine and generate its keypair",
-	Long: `Generate a new keypair for a machine (CI/CD or another device).
+	Long: `Generate a new keypair for a machine (CI/CD or another device), or
+register one from an existing public key instead of generating a software one.
 
 Example:
   nvolt machine add ci-server
-  nvolt machine add alice-laptop`,
+  nvolt machine add alice-laptop
+  nvolt machine add alice-laptop --pubkey alice-pub.pem
+  nvolt machine add ci-server --pkcs11 --pkcs11-module /usr/lib/softhsm/libsofthsm2.so \
+    --pkcs11-uri 'pkcs11:token=nvolt-test;id=%01;type=private'`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		machineName := args[0]
-		return runMachineAdd(machineName)
+		addSource := machineAddSource{
+			pubkeyFile: machineAddPubkeyFile,
+			pkcs11:     machineAddPKCS11,
+			module:     machineAddPKCS11Module,
+			uri:        machineAddPKCS11URI,
+		}
+		return runMachineAdd(machineName, addSource)
 	},
+}
+
+// machineAddSource selects where `machine add` gets the machine's RSA public
+// key from: an existing PEM file (--pubkey), an existing PKCS#11 token key
+// (--pkcs11 + --pkcs11-module/--pkcs11-uri), or neither (generate a fresh
+// software keypair, the original behavior).
+type machineAddSource struct {
+	pubkeyFile string // --pubkey
+	pkcs11     bool   // --pkcs11
+	module     string // --pkcs11-module
+	uri        string // --pkcs11-uri
+}
+
+// machineAddPublicKey returns the RSA public key to register for `machine
+// add`, from the chosen external source. It returns a nil key and nil error
+// when s is empty, telling the caller to generate a software keypair instead.
+func machineAddPublicKey(s machineAddSource) (*rsa.PublicKey, error) {
+	if s.pubkeyFile != "" && s.pkcs11 {
+		return nil, fmt.Errorf("choose one of --pubkey or --pkcs11, not both")
+	}
+
+	var pub *rsa.PublicKey
+	switch {
+	case s.pubkeyFile != "":
+		data, err := os.ReadFile(s.pubkeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", s.pubkeyFile, err)
+		}
+		if pub, err = crypto.DecodePublicKeyPEM(data); err != nil {
+			return nil, fmt.Errorf("parse public key: %w", err)
+		}
+	case s.pkcs11:
+		// nil identity: `machine add --pkcs11` registers whichever key the user
+		// selects (no existing identity to pin against, unlike rebind).
+		module, uri, err := resolveEnrollTarget(s.module, s.uri, nil)
+		if err != nil {
+			return nil, err
+		}
+		if pub, err = ReadTokenPublicKey(module, uri); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, nil
+	}
+
+	if pub.N.BitLen() < 2048 {
+		return nil, fmt.Errorf("RSA key is %d bits; minimum 2048 required", pub.N.BitLen())
+	}
+	return pub, nil
 }
 
 var machineRmCmd = &cobra.Command{
@@ -79,8 +145,8 @@ Examples:
 	},
 }
 
-func runMachineAdd(machineName string) error {
-	ui.Step(fmt.Sprintf("Adding machine: %s", ui.Cyan(machineName)))
+func runMachineAdd(machineName string, addSource machineAddSource) error {
+	ui.Step("%s", fmt.Sprintf("Adding machine: %s", ui.Cyan(machineName)))
 
 	// Find vault path (local or global)
 	vaultPath, err := findVaultPath()
@@ -98,19 +164,28 @@ func runMachineAdd(machineName string) error {
 		ui.Success("Repository up to date")
 	}
 
-	// Generate keypair for new machine
-	ui.Step("Generating keypair")
-	privateKey, err := crypto.GenerateRSAKeypair()
+	// Resolve the machine's public key: from --pubkey/--pkcs11 if given,
+	// otherwise generate a fresh software keypair (the original behavior).
+	externalPub, err := machineAddPublicKey(addSource)
 	if err != nil {
-		return fmt.Errorf("failed to generate keypair: %w", err)
+		return err
 	}
 
-	publicKey := &privateKey.PublicKey
-
-	// Encode keys
-	privateKeyPEM, err := crypto.EncodePrivateKeyPEM(privateKey)
-	if err != nil {
-		return fmt.Errorf("failed to encode private key: %w", err)
+	var publicKey *rsa.PublicKey
+	var privateKeyPEM []byte // stays nil for external sources: no local private key to distribute
+	if externalPub != nil {
+		ui.Step("Registering provided public key")
+		publicKey = externalPub
+	} else {
+		ui.Step("Generating keypair")
+		privateKey, err := crypto.GenerateRSAKeypair()
+		if err != nil {
+			return fmt.Errorf("failed to generate keypair: %w", err)
+		}
+		publicKey = &privateKey.PublicKey
+		if privateKeyPEM, err = crypto.EncodePrivateKeyPEM(privateKey); err != nil {
+			return fmt.Errorf("failed to encode private key: %w", err)
+		}
 	}
 
 	publicKeyPEM, err := crypto.EncodePublicKeyPEM(publicKey)
@@ -141,15 +216,33 @@ func runMachineAdd(machineName string) error {
 		return fmt.Errorf("failed to add machine to vault: %w", err)
 	}
 
-	ui.Success("Machine added successfully")
-	ui.PrintKeyValue("  Machine ID", machineID)
-	ui.PrintKeyValue("  Fingerprint", fingerprint)
-	ui.Section("Private key (save this securely for the new machine):")
-	fmt.Printf("%s%s%s\n", ui.Gray("---\n"), string(privateKeyPEM), ui.Gray("---"))
-	ui.Section("To use this machine:")
-	ui.Info("  1. Save the private key to ~/.nvolt/private_key.pem on the target machine")
-	ui.Info("  2. Set permissions: chmod 600 ~/.nvolt/private_key.pem")
-	ui.Info("  3. Save the machine info to ~/.nvolt/machines/machine-info.json")
+	if privateKeyPEM != nil {
+		ui.Success("Machine added successfully")
+		ui.PrintKeyValue("  Machine ID", machineID)
+		ui.PrintKeyValue("  Fingerprint", fingerprint)
+		ui.Section("Private key (save this securely for the new machine):")
+		fmt.Printf("%s%s%s\n", ui.Gray("---\n"), string(privateKeyPEM), ui.Gray("---"))
+		ui.Section("To use this machine:")
+		ui.Info("  1. Save the private key to ~/.nvolt/private_key.pem on the target machine")
+		ui.Info("  2. Set permissions: chmod 600 ~/.nvolt/private_key.pem")
+		ui.Info("  3. Save the machine info to ~/.nvolt/machines/machine-info.json")
+	} else {
+		// External source (--pubkey/--pkcs11): the private key never passed
+		// through this process, so there is nothing to distribute — the
+		// target machine already holds it (or its token does). Keep the
+		// default output to the registration + grant hint; fingerprint and
+		// the source (pubkey file path / token uri) are technical detail
+		// behind --verbose. ui.Verbose is single-pass Printf (format+args,
+		// no re-parse), so these need no "%" escaping as %s arguments.
+		ui.Verbose("  Fingerprint: %s", fingerprint)
+		if addSource.pubkeyFile != "" {
+			ui.Verbose("  Source: %s", addSource.pubkeyFile)
+		} else if addSource.uri != "" {
+			ui.Verbose("  Source: %s", addSource.uri)
+		}
+		ui.Info("Registered %s", machineID)
+		ui.Info("Grant it access to an environment with: nvolt machine grant %s -e <environment>", machineID)
+	}
 
 	// Auto-commit and push in global mode
 	if vault.IsGlobalMode(vaultPath) {
@@ -168,7 +261,7 @@ func runMachineAdd(machineName string) error {
 }
 
 func runMachineRm(machineName string) error {
-	ui.Step(fmt.Sprintf("Removing machine: %s", ui.Cyan(machineName)))
+	ui.Step("%s", fmt.Sprintf("Removing machine: %s", ui.Cyan(machineName)))
 
 	// Find vault path
 	vaultPath, err := findVaultPath()
@@ -237,7 +330,7 @@ func runMachineRm(machineName string) error {
 		return fmt.Errorf("failed to remove machine: %w", err)
 	}
 
-	ui.Success(fmt.Sprintf("Machine %s removed successfully", machineID))
+	ui.Success("%s", fmt.Sprintf("Machine %s removed successfully", machineID))
 	fmt.Println()
 	ui.Warning("Note: You should re-wrap the master key using 'nvolt sync' to ensure")
 	ui.Warning("      the removed machine cannot decrypt new secrets.")
@@ -293,7 +386,7 @@ func runMachineList() error {
 }
 
 func runMachineGrant(machineID, environment, project string) error {
-	ui.Step(fmt.Sprintf("Granting access to machine: %s", ui.Cyan(machineID)))
+	ui.Step("%s", fmt.Sprintf("Granting access to machine: %s", ui.Cyan(machineID)))
 
 	// Ensure machine is initialized
 	if err := EnsureMachineInitialized(); err != nil {
@@ -359,11 +452,16 @@ func runMachineGrant(machineID, environment, project string) error {
 
 	// Load master key for the environment
 	ui.Step("Loading master key")
-	masterKey, err := vault.UnwrapMasterKey(paths, environment)
+	dec, closeDec, err := keyprovider.LoadDecrypter()
+	if err != nil {
+		return fmt.Errorf("failed to load machine key: %w", err)
+	}
+	defer func() { _ = closeDec() }()
+	masterKey, err := vault.UnwrapMasterKey(paths, environment, dec)
 	if err != nil {
 		// Check if it's an access denied error
 		if strings.Contains(err.Error(), "access denied") || strings.Contains(err.Error(), "no such file or directory") {
-			ui.Error(fmt.Sprintf("You don't have access to the '%s' environment", ui.Cyan(environment)))
+			ui.Error("%s", fmt.Sprintf("You don't have access to the '%s' environment", ui.Cyan(environment)))
 			fmt.Println()
 			ui.Info("To grant access to another machine, you must first have access to the environment yourself.")
 			ui.Info(fmt.Sprintf("Ask someone with access to run: %s", ui.Gray(fmt.Sprintf("nvolt machine grant %s -e %s", currentMachine.ID, environment))))
@@ -375,19 +473,19 @@ func runMachineGrant(machineID, environment, project string) error {
 	ui.Success("Master key loaded")
 
 	// Grant access to the machine
-	ui.Step(fmt.Sprintf("Granting access to %s", ui.Cyan(machineID)))
+	ui.Step("%s", fmt.Sprintf("Granting access to %s", ui.Cyan(machineID)))
 	wasGranted, err := vault.GrantMachineAccess(paths, environment, machineID, masterKey, currentMachine.ID)
 	if err != nil {
 		return fmt.Errorf("failed to grant access: %w", err)
 	}
 
 	if wasGranted {
-		ui.Success(fmt.Sprintf("Access granted to %s", ui.Cyan(machineID)))
+		ui.Success("%s", fmt.Sprintf("Access granted to %s", ui.Cyan(machineID)))
 		fmt.Println()
 		ui.Info(fmt.Sprintf("Machine %s can now decrypt secrets in environment %s",
 			ui.Cyan(machineID), ui.Cyan(environment)))
 	} else {
-		ui.Success(fmt.Sprintf("Machine %s already has access to environment %s",
+		ui.Success("%s", fmt.Sprintf("Machine %s already has access to environment %s",
 			ui.Cyan(machineID), ui.Cyan(environment)))
 		fmt.Println()
 		ui.Info("No changes needed")
@@ -552,6 +650,14 @@ func init() {
 	machineCmd.AddCommand(machineRmCmd)
 	machineCmd.AddCommand(machineListCmd)
 	machineCmd.AddCommand(machineGrantCmd)
+
+	// --pubkey/--pkcs11 let `machine add` register an existing public key
+	// instead of generating a software one; mutually exclusive (enforced in
+	// machineAddPublicKey).
+	machineAddCmd.Flags().StringVar(&machineAddPubkeyFile, "pubkey", "", "Register this machine from an existing public key PEM file, instead of generating one")
+	machineAddCmd.Flags().BoolVar(&machineAddPKCS11, "pkcs11", false, "Register this machine from an existing PKCS#11 token key's public key")
+	machineAddCmd.Flags().StringVar(&machineAddPKCS11Module, "pkcs11-module", "", "Path to PKCS#11 module (.so); autodetected if omitted")
+	machineAddCmd.Flags().StringVar(&machineAddPKCS11URI, "pkcs11-uri", "", "PKCS#11 URI of the RSA key to register; omit on a terminal to pick interactively")
 
 	// Add flags to grant command
 	machineGrantCmd.Flags().StringP("env", "e", "default", "Environment name")

@@ -1,0 +1,71 @@
+//go:build pkcs11 || tpm_static
+
+package keyprovider
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/iluxav/nvolt/internal/hsmtest"
+	"github.com/iluxav/nvolt/pkg/types"
+)
+
+func TestEnrollValidatesAndSelfTests(t *testing.T) {
+	mod := hsmtest.Provision(t)
+	src, pub, err := Enroll(mod, "pkcs11:token=nvolt-test;id=%01;type=private", "env",
+		func() (string, error) { return "1234", nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src.Source != "pkcs11" || src.OAEPMode == "" {
+		t.Fatalf("bad source: %+v", src)
+	}
+	if pub == nil || pub.N.BitLen() < 2048 {
+		t.Fatal("bad public key")
+	}
+}
+
+// TestEnrollRejectsSub2048Key proves the enroll validation gate in
+// internal/keyprovider/pkcs11.go rejects RSA keys below the 2048-bit
+// minimum, rather than silently accepting a weak key. This is
+// load-bearing security behavior: without it, a token holding a legacy
+// or misconfigured sub-2048 RSA key could be enrolled and used for key
+// wrapping despite being cryptographically too weak.
+func TestEnrollRejectsSub2048Key(t *testing.T) {
+	mod := hsmtest.Provision(t)
+	src, pub, err := Enroll(mod, "pkcs11:token=nvolt-test;id=%02;type=private", "env",
+		func() (string, error) { return "1234", nil })
+	if err == nil {
+		t.Fatal("expected error enrolling sub-2048 RSA key, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "2048") || !strings.Contains(strings.ToLower(msg), "bit") {
+		t.Fatalf("error message does not indicate a bit-size rejection: %q", msg)
+	}
+	if src != (types.KeySource{}) {
+		t.Fatalf("expected zero-value KeySource on rejection, got %+v", src)
+	}
+	if pub != nil {
+		t.Fatalf("expected nil public key on rejection, got %+v", pub)
+	}
+}
+
+// TestEnrollPinModeNoneDoesNotPanic proves the pin_mode=none path in Enroll no
+// longer panics. pinentry.Read("none") returns "", and Session.Login used to
+// dereference &pinB[0] on that empty slice, index-out-of-range panicking.
+// Enroll now guards the Login call on pin != "" (mirroring the runtime
+// loadPKCS11Decrypter path), so with pin_mode=none it simply skips login. On
+// SoftHSM this is expected to surface as an ERROR (private key objects
+// require login, so FindRSAPrivateKey fails without one) — the assertion here
+// is only that it returns rather than panics.
+func TestEnrollPinModeNoneDoesNotPanic(t *testing.T) {
+	mod := hsmtest.Provision(t)
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("panicked: %v", r)
+		}
+	}()
+	_, _, err := Enroll(mod, "pkcs11:token=nvolt-test;id=%01;type=private", "none",
+		func() (string, error) { return "", nil })
+	t.Logf("Enroll with pin_mode=none returned: %v", err)
+}
