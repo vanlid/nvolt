@@ -95,7 +95,7 @@ func runWithSecrets(environment string, projects []string, cmdArgs []string) err
 
 		if len(secretFiles) == 0 {
 			crypto.ZeroBytes(masterKey)
-			ui.Warning(fmt.Sprintf("No secrets found for project '%s' in environment '%s'", projectInfo.DisplayName, environment))
+			ui.Warning("%s", fmt.Sprintf("No secrets found for project '%s' in environment '%s'", projectInfo.DisplayName, environment))
 			continue
 		}
 
@@ -134,7 +134,7 @@ func runWithSecrets(environment string, projects []string, cmdArgs []string) err
 		return fmt.Errorf("no secrets could be decrypted from any project")
 	}
 
-	ui.Success(fmt.Sprintf("Loaded %d secrets from environment '%s'", len(allSecrets), ui.Cyan(environment)))
+	ui.Success("%s", fmt.Sprintf("Loaded %d secrets from environment '%s'", len(allSecrets), ui.Cyan(environment)))
 	ui.Info(fmt.Sprintf("Running: %s\n", ui.Gray(strings.Join(cmdArgs, " "))))
 
 	// Prepare environment

@@ -101,7 +101,7 @@ func runPull(environment string, projects []string, write bool) error {
 
 		if len(secretFiles) == 0 {
 			crypto.ZeroBytes(masterKey)
-			ui.Warning(fmt.Sprintf("No secrets found for project '%s' in environment '%s'", projectInfo.DisplayName, environment))
+			ui.Warning("%s", fmt.Sprintf("No secrets found for project '%s' in environment '%s'", projectInfo.DisplayName, environment))
 			continue
 		}
 
@@ -144,7 +144,7 @@ func runPull(environment string, projects []string, write bool) error {
 		return fmt.Errorf("no secrets could be decrypted from any project")
 	}
 
-	ui.Success(fmt.Sprintf("Decrypted %d secrets from environment '%s'", len(allSecrets), ui.Cyan(environment)))
+	ui.Success("%s", fmt.Sprintf("Decrypted %d secrets from environment '%s'", len(allSecrets), ui.Cyan(environment)))
 
 	// Format output
 	output := vault.FormatEnvOutput(allSecrets)
@@ -161,7 +161,7 @@ func runPull(environment string, projects []string, write bool) error {
 			return fmt.Errorf("failed to write .env file: %w", err)
 		}
 
-		ui.Success(fmt.Sprintf("Written to %s", ui.Cyan(envFile)))
+		ui.Success("%s", fmt.Sprintf("Written to %s", ui.Cyan(envFile)))
 	} else {
 		// Print to stdout
 		ui.Section("Secrets:")

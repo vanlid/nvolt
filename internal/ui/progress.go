@@ -146,7 +146,7 @@ func (s *Spinner) Stop() {
 // Success stops the spinner and shows success
 func (s *Spinner) Success(message string) {
 	s.Stop()
-	Success(message)
+	Success("%s", message)
 }
 
 // render draws the current spinner frame

@@ -144,7 +144,7 @@ Examples:
 }
 
 func runMachineAdd(machineName string, addSource machineAddSource) error {
-	ui.Step(fmt.Sprintf("Adding machine: %s", ui.Cyan(machineName)))
+	ui.Step("%s", fmt.Sprintf("Adding machine: %s", ui.Cyan(machineName)))
 
 	// Find vault path (local or global)
 	vaultPath, err := findVaultPath()
@@ -259,7 +259,7 @@ func runMachineAdd(machineName string, addSource machineAddSource) error {
 }
 
 func runMachineRm(machineName string) error {
-	ui.Step(fmt.Sprintf("Removing machine: %s", ui.Cyan(machineName)))
+	ui.Step("%s", fmt.Sprintf("Removing machine: %s", ui.Cyan(machineName)))
 
 	// Find vault path
 	vaultPath, err := findVaultPath()
@@ -328,7 +328,7 @@ func runMachineRm(machineName string) error {
 		return fmt.Errorf("failed to remove machine: %w", err)
 	}
 
-	ui.Success(fmt.Sprintf("Machine %s removed successfully", machineID))
+	ui.Success("%s", fmt.Sprintf("Machine %s removed successfully", machineID))
 	fmt.Println()
 	ui.Warning("Note: You should re-wrap the master key using 'nvolt sync' to ensure")
 	ui.Warning("      the removed machine cannot decrypt new secrets.")
@@ -384,7 +384,7 @@ func runMachineList() error {
 }
 
 func runMachineGrant(machineID, environment, project string) error {
-	ui.Step(fmt.Sprintf("Granting access to machine: %s", ui.Cyan(machineID)))
+	ui.Step("%s", fmt.Sprintf("Granting access to machine: %s", ui.Cyan(machineID)))
 
 	// Ensure machine is initialized
 	if err := EnsureMachineInitialized(); err != nil {
@@ -459,7 +459,7 @@ func runMachineGrant(machineID, environment, project string) error {
 	if err != nil {
 		// Check if it's an access denied error
 		if strings.Contains(err.Error(), "access denied") || strings.Contains(err.Error(), "no such file or directory") {
-			ui.Error(fmt.Sprintf("You don't have access to the '%s' environment", ui.Cyan(environment)))
+			ui.Error("%s", fmt.Sprintf("You don't have access to the '%s' environment", ui.Cyan(environment)))
 			fmt.Println()
 			ui.Info("To grant access to another machine, you must first have access to the environment yourself.")
 			ui.Info(fmt.Sprintf("Ask someone with access to run: %s", ui.Gray(fmt.Sprintf("nvolt machine grant %s -e %s", currentMachine.ID, environment))))
@@ -471,19 +471,19 @@ func runMachineGrant(machineID, environment, project string) error {
 	ui.Success("Master key loaded")
 
 	// Grant access to the machine
-	ui.Step(fmt.Sprintf("Granting access to %s", ui.Cyan(machineID)))
+	ui.Step("%s", fmt.Sprintf("Granting access to %s", ui.Cyan(machineID)))
 	wasGranted, err := vault.GrantMachineAccess(paths, environment, machineID, masterKey, currentMachine.ID)
 	if err != nil {
 		return fmt.Errorf("failed to grant access: %w", err)
 	}
 
 	if wasGranted {
-		ui.Success(fmt.Sprintf("Access granted to %s", ui.Cyan(machineID)))
+		ui.Success("%s", fmt.Sprintf("Access granted to %s", ui.Cyan(machineID)))
 		fmt.Println()
 		ui.Info(fmt.Sprintf("Machine %s can now decrypt secrets in environment %s",
 			ui.Cyan(machineID), ui.Cyan(environment)))
 	} else {
-		ui.Success(fmt.Sprintf("Machine %s already has access to environment %s",
+		ui.Success("%s", fmt.Sprintf("Machine %s already has access to environment %s",
 			ui.Cyan(machineID), ui.Cyan(environment)))
 		fmt.Println()
 		ui.Info("No changes needed")
