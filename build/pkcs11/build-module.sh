@@ -41,6 +41,16 @@ REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 OUTPUT_PATH=${1:-${OUTPUT_PATH:-"$REPO_ROOT/internal/pkcs11/dist/module.bin"}}
 JOBS=${JOBS:-$(nproc 2>/dev/null || echo 4)}
 
+# Resolve a relative STATIC_ARCHIVES against the repo root NOW, before we cd into
+# the temp build dir: the install step below runs from $WORK, so a relative path
+# would otherwise land in $WORK/<path> instead of the repo checkout.
+if [ -n "${STATIC_ARCHIVES:-}" ]; then
+  case "$STATIC_ARCHIVES" in
+    /*) ;;
+    *) STATIC_ARCHIVES="$REPO_ROOT/$STATIC_ARCHIVES" ;;
+  esac
+fi
+
 # --- Target selection ---------------------------------------------------------
 # TARGET=<os>-<arch> cross-compiles from a Linux host; unset builds natively.
 # All four TPM targets build from one Linux box given the cross toolchains:
@@ -91,9 +101,10 @@ git clone --depth 1 --branch "$WOLFSSL_TAG" https://github.com/wolfSSL/wolfssl.g
 cd "$WORK/wolfssl"
 ./autogen.sh
 ./configure $HOST_FLAG --prefix="$PREFIX" --enable-static --disable-shared --enable-singlethreaded \
+  --disable-examples --disable-crypttests \
   --enable-aescfb --enable-rsapss --enable-keygen --enable-pwdbased \
   --enable-scrypt --enable-cryptocb \
-  C_EXTRA_FLAGS="-fPIC -DWOLFSSL_PUBLIC_MP -DWC_RSA_DIRECT -DHAVE_AES_ECB -DHAVE_AES_KEYWRAP"
+  C_EXTRA_FLAGS="-fPIC -Wno-error -DWOLFSSL_PUBLIC_MP -DWC_RSA_DIRECT -DHAVE_AES_ECB -DHAVE_AES_KEYWRAP"
 make -j"$JOBS"
 make install
 

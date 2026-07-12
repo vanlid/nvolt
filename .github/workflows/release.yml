@@ -200,7 +200,8 @@ jobs:
         if: matrix.cross_setup == 'musl-arm64'
         run: |
           set -euo pipefail
-          curl -fsSL -o /tmp/musl-cross.tgz "$MUSL_CROSS_URL"
+          curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors --connect-timeout 30 \
+            -o /tmp/musl-cross.tgz "$MUSL_CROSS_URL"
           sudo tar -xzf /tmp/musl-cross.tgz -C /opt
           echo "/opt/aarch64-linux-musl-cross/bin" >> "$GITHUB_PATH"
 
