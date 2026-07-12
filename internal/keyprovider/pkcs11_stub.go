@@ -14,7 +14,7 @@ import (
 // without a PKCS#11 loader (the default fully-static binary). Use the
 // `-tags pkcs11` (dynamic) build for
 // hardware-backed keys.
-var errNoPKCS11 = errors.New("this nvolt was not built with PKCS#11 support; rebind to a software key or use the pkcs11-enabled build")
+var errNoPKCS11 = errors.New("this nvolt was not built with PKCS#11 support; use rebind to switch config to using a software key or use a build with PKCS#11 support")
 
 // loadPKCS11Decrypter is the default build's stub for the real pkcs11.go
 // function of the same name: provider.go's LoadDecrypter (always compiled)
