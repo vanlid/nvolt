@@ -36,6 +36,13 @@ type Session struct {
 // Object is a PKCS#11 object handle.
 type Object = uintptr
 
+// packed reports the struct-packing convention of this session's module: true
+// for #pragma pack(1), false for natural alignment. It is derived from the
+// header offset detectHeaderOffset measured at Open and threaded into every
+// CK_* struct marshaling call (see abipack.go / mechPacked). On unix the value
+// is ignored (real Go structs), so this is only load-bearing on Windows.
+func (s *Session) packed() bool { return mechPacked(s.m.headerOffset) }
+
 // OpenSession initializes the module (once), finds the slot whose token label
 // matches tokenLabel, and opens a read-only serial session on it. Most
 // callers (decrypt, enroll, list/use, discovery) only ever read objects and
@@ -203,7 +210,7 @@ func (s *Session) FindRSAPrivateKey(id []byte) (Object, error) {
 	if len(id) > 0 {
 		attrs = append(attrs, attr{typ: CKA_ID, val: id})
 	}
-	tmpl := packTemplate(attrs)
+	tmpl := packTemplate(attrs, s.packed())
 
 	rv, _, _ := purego.SyscallN(s.m.fn(idxFindObjectsInit), s.handle,
 		uintptr(tmpl.ptr()), tmpl.count())
@@ -278,7 +285,7 @@ func (s *Session) RSAPublicKey(obj Object) (*rsa.PublicKey, error) {
 func (s *Session) getAttribute(obj Object, attrType uintptr) ([]byte, error) {
 	// First call: nil val (pValue=NULL, ulValueLen=0) asks the token for the
 	// required size, which it writes back into ulValueLen.
-	tmpl := packTemplate([]attr{{typ: attrType}})
+	tmpl := packTemplate([]attr{{typ: attrType}}, s.packed())
 	rv, _, _ := purego.SyscallN(s.m.fn(idxGetAttributeValue), s.handle, obj,
 		uintptr(tmpl.ptr()), 1)
 	runtime.KeepAlive(tmpl)
@@ -312,7 +319,7 @@ func (s *Session) getAttribute(obj Object, attrType uintptr) ([]byte, error) {
 // as some PIV tokens surface via PKCS#11), the returned error spells out the
 // manual on-card generation fallback (ykman / yubico-piv-tool).
 func (s *Session) GenerateRSAKeyPair(label string, id []byte, bits int) (Object, error) {
-	mech := packMechanismSimple(CKM_RSA_PKCS_KEY_PAIR_GEN)
+	mech := packMechanismSimple(CKM_RSA_PKCS_KEY_PAIR_GEN, s.packed())
 
 	// CK_BBOOL is a single byte on every ABI; CK_TRUE == 0x01. CKA_MODULUS_BITS
 	// is a CK_ULONG, so encodeCKULong sizes it per ABI. The packed templates
@@ -350,8 +357,8 @@ func (s *Session) GenerateRSAKeyPair(label string, id []byte, bits int) (Object,
 	}
 	privAttrs = append(privAttrs, labelIDAttrs()...)
 
-	pubTemplate := packTemplate(pubAttrs)
-	privTemplate := packTemplate(privAttrs)
+	pubTemplate := packTemplate(pubAttrs, s.packed())
+	privTemplate := packTemplate(privAttrs, s.packed())
 
 	// phPublicKey/phPrivateKey are CK_OBJECT_HANDLE out-params (CK_ULONG width).
 	pubHandle := newCKULongOut()
@@ -409,7 +416,7 @@ func (s *Session) ImportRSAPrivateKey(label string, id []byte, priv *rsa.Private
 	if len(id) > 0 {
 		attrs = append(attrs, attr{typ: CKA_ID, val: id})
 	}
-	tmpl := packTemplate(attrs)
+	tmpl := packTemplate(attrs, s.packed())
 	objHandle := newCKULongOut()
 	rv, _, _ := purego.SyscallN(s.m.fn(idxCreateObject), s.handle,
 		uintptr(tmpl.ptr()), tmpl.count(), uintptr(objHandle.ptr()))
@@ -428,7 +435,7 @@ func (s *Session) ImportRSAPrivateKey(label string, id []byte, priv *rsa.Private
 
 // DecryptOAEPSHA256 performs CKM_RSA_PKCS_OAEP (SHA-256, MGF1-SHA256) on the token.
 func (s *Session) DecryptOAEPSHA256(priv Object, ct []byte) ([]byte, error) {
-	mech := packMechanismOAEP(CKM_RSA_PKCS_OAEP, CKM_SHA256, CKG_MGF1_SHA256, CKZ_DATA_SPECIFIED)
+	mech := packMechanismOAEP(CKM_RSA_PKCS_OAEP, CKM_SHA256, CKG_MGF1_SHA256, CKZ_DATA_SPECIFIED, s.packed())
 	rv, _, _ := purego.SyscallN(s.m.fn(idxDecryptInit), s.handle,
 		uintptr(mech.ptr()), priv)
 	runtime.KeepAlive(mech)
@@ -447,7 +454,7 @@ func (s *Session) DecryptOAEPSHA256(priv Object, ct []byte) ([]byte, error) {
 // This is the fallback path for tokens (e.g. SoftHSM 2.6.1) that do not expose
 // native RSA-OAEP-SHA256; see ErrMechanismUnsupported.
 func (s *Session) DecryptRawRSA(priv Object, ct []byte) ([]byte, error) {
-	mech := packMechanismSimple(CKM_RSA_X_509)
+	mech := packMechanismSimple(CKM_RSA_X_509, s.packed())
 	rv, _, _ := purego.SyscallN(s.m.fn(idxDecryptInit), s.handle,
 		uintptr(mech.ptr()), priv)
 	runtime.KeepAlive(mech)

@@ -156,7 +156,7 @@ func (s *Session) findRSAObjects(class uintptr, id []byte) ([]Object, error) {
 	if len(id) > 0 {
 		attrs = append(attrs, attr{typ: CKA_ID, val: id})
 	}
-	tmpl := packTemplate(attrs)
+	tmpl := packTemplate(attrs, s.packed())
 	rv, _, _ := purego.SyscallN(s.m.fn(idxFindObjectsInit), s.handle,
 		uintptr(tmpl.ptr()), tmpl.count())
 	runtime.KeepAlive(tmpl)
