@@ -104,6 +104,7 @@ func GetHomePaths() (*HomePaths, error) {
 //   - machine_prefix = ".nvolt"
 //   - secret_prefix = ".nvolt"
 //   - keys_prefix = ".nvolt"
+//
 // For global mode: vaultRoot = ~/.nvolt/orgs/org/repo, projectName is required
 //   - machine_prefix = "" (machines at root)
 //   - secret_prefix = projectName
@@ -136,7 +137,6 @@ func GetVaultPaths(vaultRoot, projectName string) *Paths {
 		Config:      filepath.Join(vaultRoot, secretPrefix, ConfigFile),
 	}
 }
-
 
 // GetLocalVaultPath returns the vault path in the current directory
 func GetLocalVaultPath() (string, error) {
@@ -251,4 +251,3 @@ func GetRepoRootFromVault(vaultPath string) string {
 	// For global mode, the vaultPath IS the repo root
 	return vaultPath
 }
-

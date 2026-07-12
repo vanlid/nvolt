@@ -95,8 +95,8 @@ func ParseRepoURL(repoSpec string) (string, error) {
 
 	// If it's already a full Git URL (SSH or HTTPS), use as-is
 	if strings.HasPrefix(repoSpec, "git@") ||
-	   strings.HasPrefix(repoSpec, "https://") ||
-	   strings.HasPrefix(repoSpec, "http://") {
+		strings.HasPrefix(repoSpec, "https://") ||
+		strings.HasPrefix(repoSpec, "http://") {
 		return repoSpec, nil
 	}
 

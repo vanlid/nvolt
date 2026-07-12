@@ -112,5 +112,5 @@ func Success(format string, args ...interface{}) {
 // Step prints a step indicator
 func Step(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
-	Info(Cyan("→")+" "+msg)
+	Info(Cyan("→") + " " + msg)
 }
