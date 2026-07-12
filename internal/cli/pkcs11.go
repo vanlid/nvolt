@@ -194,10 +194,62 @@ func runPKCS11List(module string) error {
 
 	ui.Section(fmt.Sprintf("Tokens (%d):", len(tokens)))
 	for _, tok := range tokens {
+		// In verbose mode on an interactive terminal, offer to log in and reveal
+		// the real size + fingerprint of any key whose modulus the token hid
+		// pre-login (Bits==0). Plain `list` and non-interactive runs are
+		// untouched; a token with nothing hidden never prompts.
+		tok = maybeRevealHiddenKeys(module, tok)
 		printTokenListing(tok, module)
 	}
 
 	return nil
+}
+
+// hasHiddenKey reports whether any key in keys had its size hidden by the token
+// during no-login discovery (Bits == 0), i.e. whether a login would reveal more.
+func hasHiddenKey(keys []pkcs11.KeyInfo) bool {
+	for _, k := range keys {
+		if k.Bits == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// maybeRevealHiddenKeys is the interactive, verbose-only PIN-reveal step for
+// `pkcs11 list -v`. When the output level is Verbose, stdin is an interactive
+// terminal, and tok has at least one key whose size the token hid pre-login
+// (Bits==0), it prompts ONCE for the token PIN, logs in, and re-reads each
+// hidden key's public modulus so the real RSA-<bits> and fingerprint can be
+// shown (via pkcs11.FillHiddenKeyInfo).
+//
+// It NEVER fails the listing: outside verbose mode, off a terminal, or when
+// nothing is hidden it returns tok unchanged with no prompt; and a
+// declined/empty PIN or any login/read error is swallowed (logged at verbose)
+// so the affected keys simply keep the Task 2 "size hidden" display. SoftHSM /
+// YubiKey, which expose the modulus pre-login, have nothing hidden and so never
+// prompt — this is exercised by build + code review and the embedded harness,
+// not by CI (where SoftHSM reveals the modulus without a login).
+func maybeRevealHiddenKeys(module string, tok pkcs11.TokenListing) pkcs11.TokenListing {
+	if ui.GetLevel() < ui.LevelVerbose || !isInteractive() || !hasHiddenKey(tok.Keys) {
+		return tok
+	}
+
+	// ui.Info is single-pass Printf (format+args), so a "%" in the token label
+	// is safe as a plain %s argument with no escaping.
+	ui.Info("  Token %q hides key sizes until login; enter its PIN to reveal them (or leave blank to skip).", tok.Label)
+	pin, err := pinentry.Read("prompt")
+	if err != nil || pin == "" {
+		return tok
+	}
+
+	filled, err := pkcs11.FillHiddenKeyInfo(module, tok.Label, pin, tok.Keys)
+	if err != nil {
+		ui.Verbose("  Could not reveal key sizes on %q: %s", tok.Label, err.Error())
+		return tok
+	}
+	tok.Keys = filled
+	return tok
 }
 
 // printTokenListing renders one token's header, then either its RSA keys or
@@ -233,7 +285,16 @@ func printTokenListing(tok pkcs11.TokenListing, module string) {
 		// the raw (unescaped) ID/Label are correct as %x/%s arguments here —
 		// unlike the ui.PrintKeyValue/Info double-format pattern used above
 		// for the token label.
-		ui.Info("    RSA-%d", k.Bits)
+		//
+		// Bits==0 means the token hid CKA_MODULUS during no-login discovery
+		// (e.g. wolfPKCS11 before a PIN): print an honest "size hidden" line
+		// rather than a misleading "RSA-0". `list -v` on a terminal offers to
+		// log in and fill in the real size (see maybeRevealHiddenKeys).
+		if k.Bits > 0 {
+			ui.Info("    RSA-%d", k.Bits)
+		} else {
+			ui.Info("    RSA (size hidden — login to view)")
+		}
 		ui.Verbose("      ID: %x  Label: %s", k.ID, k.Label)
 		// The public-key fingerprint (same "SHA256:<base64>" shown as
 		// "Fingerprint:" during init) lets a user match a token key to a
@@ -683,6 +744,67 @@ func pctEncodeID(id []byte) string {
 	return b.String()
 }
 
+// resolveModuleForToken resolves which PKCS#11 module a --token command
+// (generate/import) should act on, so that naming a token without a
+// --pkcs11-module targets the module that actually hosts that token instead of
+// silently defaulting to a single installed provider (often OpenSC), which
+// would then fail with "no token with label ...".
+//
+// Precedence:
+//   - An explicit flagModule, or NVOLT_PKCS11_MODULE being set, always wins and
+//     is resolved via pkcs11.ResolveModulePath exactly as before.
+//   - Otherwise, when a token label is given, every discovered module
+//     (pkcs11.DetectModules) is scanned with the same no-login discovery
+//     `pkcs11 list` uses (pkcs11.ListTokensAndKeys) and matched by token label.
+//     A module that fails to open is skipped with a warning, as list does. This
+//     also matches a blank/uninitialized token that generate will auto-create:
+//     ListTokensAndKeys reports the token even with zero keys, so its label
+//     still matches. Exactly one hosting module is used; several is an error
+//     listing the candidates; none falls back to ResolveModulePath("") so the
+//     pre-existing "single default module / not-found" behavior and error are
+//     preserved unchanged.
+func resolveModuleForToken(flagModule, token string) (string, error) {
+	if flagModule != "" || os.Getenv("NVOLT_PKCS11_MODULE") != "" {
+		return pkcs11.ResolveModulePath(flagModule)
+	}
+	if token == "" {
+		return pkcs11.ResolveModulePath("")
+	}
+
+	var hosting []pkcs11.DiscoveredModule
+	for _, m := range pkcs11.DetectModules() {
+		tokens, err := pkcs11.ListTokensAndKeys(m.Path)
+		if err != nil {
+			ui.Warning("Skipping %s: %s",
+				strings.ReplaceAll(m.Name, "%", "%%"),
+				strings.ReplaceAll(err.Error(), "%", "%%"))
+			continue
+		}
+		for _, t := range tokens {
+			if t.Label == token {
+				hosting = append(hosting, m)
+				break
+			}
+		}
+	}
+
+	switch len(hosting) {
+	case 1:
+		return hosting[0].Path, nil
+	case 0:
+		// No discovered module hosts the token; fall back to the default
+		// resolution so the existing "single default module / not found" error
+		// (e.g. "no token with label ...") is preserved unchanged.
+		return pkcs11.ResolveModulePath("")
+	default:
+		var b strings.Builder
+		for _, m := range hosting {
+			fmt.Fprintf(&b, "\n  %s (%s)", m.Path, m.Name)
+		}
+		return "", fmt.Errorf("token %q found on multiple modules; pass --pkcs11-module:%s", token, b.String())
+	}
+}
+
 var pkcs11GenerateCmd = &cobra.Command{
 	Use:   "generate",
 	Short: "Generate an RSA keypair on a PKCS#11 token",
@@ -693,7 +815,7 @@ Example:
   nvolt pkcs11 generate --pkcs11-module /usr/lib/softhsm/libsofthsm2.so \
     --token nvolt-test --label my-key --id 03 --bits 2048`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		module, err := pkcs11.ResolveModulePath(pkcs11GenModule)
+		module, err := resolveModuleForToken(pkcs11GenModule, pkcs11GenToken)
 		if err != nil {
 			return err
 		}
@@ -839,7 +961,7 @@ Example:
   nvolt pkcs11 import --pkcs11-module /usr/lib/softhsm/libsofthsm2.so \
     --token nvolt-test --label my-key --id 03 --privkey key.pem`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		module, err := pkcs11.ResolveModulePath(pkcs11ImportModule)
+		module, err := resolveModuleForToken(pkcs11ImportModule, pkcs11ImportToken)
 		if err != nil {
 			return err
 		}
