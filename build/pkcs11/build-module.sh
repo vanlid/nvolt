@@ -10,11 +10,15 @@
 #   build/pkcs11/build-module.sh [OUTPUT_PATH]
 #
 # Environment overrides:
-#   TPM_INTERFACE  devtpm | winapi | swtpm   (default: devtpm on Linux, winapi on
-#                  Windows/MSYS). Use swtpm for CI/testing without hardware.
-#   OUTPUT_PATH    where to copy the finished module
-#                  (default: internal/pkcs11/dist/module.bin — the //go:embed path)
-#   JOBS           parallel make jobs (default: nproc)
+#   TPM_INTERFACE    devtpm | winapi | swtpm   (default: devtpm on Linux, winapi on
+#                    Windows/MSYS). Use swtpm for CI/testing without hardware.
+#   OUTPUT_PATH      where to copy the finished module
+#                    (default: internal/pkcs11/dist/module.bin — the //go:embed path)
+#   JOBS             parallel make jobs (default: nproc)
+#   STATIC_ARCHIVES  when set to a directory, additionally install
+#                    libwolfpkcs11.a/libwolftpm.a/libwolfssl.a and their headers
+#                    into <dir>/lib and <dir>/include, for cgo static linking
+#                    into nvolt-tpm. The shared module is still built either way.
 #
 # The result is stripped and its dependencies are printed for verification.
 set -euo pipefail
@@ -97,11 +101,22 @@ log "wolfPKCS11 $WOLFPKCS11_TAG (shared module; wolfSSL+wolfTPM baked in as stat
 git clone --depth 1 --branch "$WOLFPKCS11_TAG" https://github.com/wolfSSL/wolfPKCS11.git "$WORK/wolfPKCS11"
 cd "$WORK/wolfPKCS11"
 ./autogen.sh
-./configure $HOST_FLAG --prefix="$PREFIX" --enable-singlethreaded --enable-wolftpm --disable-dh \
+./configure $HOST_FLAG --prefix="$PREFIX" --enable-static --enable-singlethreaded --enable-wolftpm --disable-dh \
   --disable-examples --with-wolfcrypt="$PREFIX" \
   CPPFLAGS="-I$PREFIX/include" CFLAGS="-DWOLFPKCS11_TPM_STORE -I$PREFIX/include" \
   LDFLAGS="-L$PREFIX/lib"
 make -j"$JOBS"
+
+if [ -n "${STATIC_ARCHIVES:-}" ]; then
+  log "installing static archives + headers to $STATIC_ARCHIVES (cgo static-link mode)"
+  # wolfPKCS11 static archive is not installed by the shared-module build; add
+  # --enable-static to its configure (above) and install here.
+  make -C "$WORK/wolfPKCS11" install >/dev/null   # installs libwolfpkcs11.a when --enable-static
+  mkdir -p "$STATIC_ARCHIVES/lib" "$STATIC_ARCHIVES/include"
+  cp "$PREFIX"/lib/libwolfpkcs11.a "$PREFIX"/lib/libwolftpm.a "$PREFIX"/lib/libwolfssl.a "$STATIC_ARCHIVES/lib/"
+  cp -r "$PREFIX"/include/wolfpkcs11 "$PREFIX"/include/wolfssl "$PREFIX"/include/wolftpm "$STATIC_ARCHIVES/include/"
+  echo "static archives installed to $STATIC_ARCHIVES" >&2
+fi
 
 SO=$(find "$WORK/wolfPKCS11" \( -name 'libwolfpkcs11.so*' -o -name 'libwolfpkcs11*.dll' \) -type f | head -1)
 [ -n "$SO" ] || { echo "build produced no module" >&2; exit 1; }
