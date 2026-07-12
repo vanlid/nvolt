@@ -1,4 +1,4 @@
-//go:build windows
+//go:build pkcs11 && windows
 
 // Package pkcs11 loads PKCS#11 modules via the Win32 dynamic loader on
 // Windows. This lets nvolt run directly on a Windows machine that has a
