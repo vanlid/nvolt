@@ -299,8 +299,8 @@ jobs:
             darwin)  EXT=dylib ;;
             *)       EXT=bin ;;
           esac
-          cp internal/pkcs11/dist/module.bin "wolfpkcs11-${TARGET}.${EXT}"
-          echo "MODULE_ARTIFACT=wolfpkcs11-${TARGET}.${EXT}" >> "$GITHUB_ENV"
+          cp internal/pkcs11/dist/module.bin "wolfpkcs11-tpm-${TARGET}.${EXT}"
+          echo "MODULE_ARTIFACT=wolfpkcs11-tpm-${TARGET}.${EXT}" >> "$GITHUB_ENV"
 
       - name: Upload standalone wolfPKCS11 module
         if: matrix.variant == 'pkcs11' && matrix.pkcs11_target != ''
@@ -398,14 +398,14 @@ jobs:
           cp install.sh upload/install.sh
           chmod +x upload/install.sh
 
-          # GPL hygiene for the standalone wolfpkcs11-<os>-<arch>.{so,dll} modules:
+          # GPL hygiene for the standalone wolfpkcs11-tpm-<os>-<arch>.{so,dll} modules:
           # wolfSSL / wolfTPM / wolfPKCS11 are GPLv2. Emit one NOTICE covering all
           # targets, with the pinned versions (single source of truth: versions.env)
           # and a pointer to the build recipe as corresponding source.
           # shellcheck source=build/pkcs11/versions.env
           source build/pkcs11/versions.env
           cat > upload/wolfpkcs11-NOTICE.txt <<EOF
-          The standalone wolfpkcs11-<os>-<arch>.{so,dll} modules published here are
+          The standalone wolfpkcs11-tpm-<os>-<arch>.{so,dll} modules published here are
           self-contained PKCS#11 providers with wolfSSL and wolfTPM statically
           linked into wolfPKCS11 (TPM 2.0 backed; Windows uses the native TBS API).
 
