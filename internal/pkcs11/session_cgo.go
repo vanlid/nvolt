@@ -498,8 +498,25 @@ func (s *Session) RSAPublicKey(obj Object) (*rsa.PublicKey, error) {
 	}, nil
 }
 
-// DecryptOAEPSHA256 performs CKM_RSA_PKCS_OAEP (SHA-256, MGF1-SHA256) on the token.
+// oaepDecryptAttempts bounds transient-error retries in DecryptOAEPSHA256 (see
+// the purego session.go for the rationale; the AMD fTPM flakes intermittently).
+const oaepDecryptAttempts = 5
+
+// DecryptOAEPSHA256 performs CKM_RSA_PKCS_OAEP (SHA-256, MGF1-SHA256) on the
+// token, retrying transient failures. A permanent failure fails every attempt;
+// the capability error (ErrMechanismUnsupported) is never retried.
 func (s *Session) DecryptOAEPSHA256(priv Object, ct []byte) ([]byte, error) {
+	var out []byte
+	var err error
+	for attempt := 0; attempt < oaepDecryptAttempts; attempt++ {
+		if out, err = s.decryptOAEPSHA256Once(priv, ct); err == nil || errors.Is(err, ErrMechanismUnsupported) {
+			break
+		}
+	}
+	return out, err
+}
+
+func (s *Session) decryptOAEPSHA256Once(priv Object, ct []byte) ([]byte, error) {
 	params := (*C.CK_RSA_PKCS_OAEP_PARAMS)(C.malloc(C.size_t(unsafe.Sizeof(C.CK_RSA_PKCS_OAEP_PARAMS{}))))
 	defer C.free(unsafe.Pointer(params))
 	params.hashAlg = C.CKM_SHA256

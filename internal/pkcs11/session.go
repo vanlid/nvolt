@@ -559,8 +559,29 @@ func (s *Session) ImportRSAPrivateKey(label string, id []byte, priv *rsa.Private
 	return objHandle.get(), nil
 }
 
-// DecryptOAEPSHA256 performs CKM_RSA_PKCS_OAEP (SHA-256, MGF1-SHA256) on the token.
+// oaepDecryptAttempts bounds transient-error retries in DecryptOAEPSHA256.
+// Sized for flaky TPMs (the AMD fTPM fails an OAEP decrypt intermittently); a
+// handful of in-process retries absorbs isolated hiccups.
+const oaepDecryptAttempts = 5
+
+// DecryptOAEPSHA256 performs CKM_RSA_PKCS_OAEP (SHA-256, MGF1-SHA256) on the
+// token, with a bounded retry. Some TPMs (AMD fTPM via wolfPKCS11) intermittently
+// fail an OAEP decrypt and succeed on retry — this affects BOTH the enroll
+// self-test and the runtime master-key unwrap (pull). A permanent failure still
+// fails on every attempt, and the capability error (ErrMechanismUnsupported) is
+// never retried, so a genuine "can't do OAEP-SHA256" still falls through fast.
 func (s *Session) DecryptOAEPSHA256(priv Object, ct []byte) ([]byte, error) {
+	var out []byte
+	var err error
+	for attempt := 0; attempt < oaepDecryptAttempts; attempt++ {
+		if out, err = s.decryptOAEPSHA256Once(priv, ct); err == nil || errors.Is(err, ErrMechanismUnsupported) {
+			break
+		}
+	}
+	return out, err
+}
+
+func (s *Session) decryptOAEPSHA256Once(priv Object, ct []byte) ([]byte, error) {
 	mech := packMechanismOAEP(CKM_RSA_PKCS_OAEP, CKM_SHA256, CKG_MGF1_SHA256, CKZ_DATA_SPECIFIED, s.packed())
 	rv, _, _ := purego.SyscallN(s.m.fn(idxDecryptInit), s.handle,
 		uintptr(mech.ptr()), priv)
