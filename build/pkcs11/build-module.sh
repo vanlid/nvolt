@@ -24,9 +24,18 @@
 set -euo pipefail
 
 # --- Pinned upstream versions (bump deliberately; these are the tested set) ---
+# These are the fallback defaults used if build/pkcs11/versions.env is
+# missing; when present, versions.env is sourced below and its values win.
+# A version bump is then a one-line change to versions.env instead of here.
 WOLFSSL_TAG=v5.9.2-stable
 WOLFTPM_TAG=v4.1.0
 WOLFPKCS11_TAG=v2.1.0-stable
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+if [[ -f "$SCRIPT_DIR/versions.env" ]]; then
+  # shellcheck source=build/pkcs11/versions.env
+  source "$SCRIPT_DIR/versions.env"
+fi
 
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 OUTPUT_PATH=${1:-${OUTPUT_PATH:-"$REPO_ROOT/internal/pkcs11/dist/module.bin"}}
