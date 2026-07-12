@@ -325,8 +325,11 @@ nvolt init --pkcs11 --pkcs11-uri 'pkcs11:token=my-yubikey;id=%01;type=private'
 # key's hardware/software backing with `nvolt rebind` instead:
 nvolt rebind --pkcs11 --pkcs11-uri 'pkcs11:token=my-yubikey;id=%01;type=private'
 
-# Generate a new RSA keypair on the token
-nvolt pkcs11 generate --token my-yubikey --label my-key --id 01 --bits 2048
+# Generate a new RSA keypair on the token (--id auto-assigns; --label defaults to nvolt)
+nvolt pkcs11 generate --token my-yubikey
+
+# Import an existing RSA private key (PKCS#1 or PKCS#8) onto the token
+nvolt pkcs11 import --token my-yubikey --privkey key.pem
 ```
 
 **Flags:**
