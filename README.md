@@ -409,6 +409,8 @@ nvolt/
 │   ├── cli/            # CLI commands
 │   ├── crypto/         # Cryptographic operations
 │   ├── vault/          # Vault management
+│   ├── keyprovider/    # Machine key source: software key or PKCS#11 token
+│   ├── pkcs11/         # PKCS#11 (Cryptoki) client — compiled under the `pkcs11` build tag
 │   ├── git/            # Git operations
 │   └── config/         # Configuration management
 └── pkg/
