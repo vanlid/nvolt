@@ -83,7 +83,7 @@ func (m *Module) openSession(tokenLabel string, rw bool) (*Session, error) {
 
 // findSlot returns the slot id and CK_TOKEN_INFO.flags of the token whose
 // label matches tokenLabel.
-func (m *Module) findSlot(tokenLabel string) (uintptr, uintptr, error) {
+func (m *Module) findSlot(tokenLabel string) (slotID, tokenFlags uintptr, err error) {
 	// count is a CK_ULONG in/out param (slot count): 4 bytes on Windows.
 	count := newCKULongOut()
 	// tokenPresent = CK_TRUE (1)

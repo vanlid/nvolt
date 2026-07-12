@@ -31,7 +31,7 @@ func TestUnpadOAEPSHA256MatchesStdlib(t *testing.T) {
 // rawOAEPBlock encrypts msg with RSA-OAEP-SHA256 under key's public half and
 // returns the raw RSA decryption block em = c^d mod n, left-padded to k bytes
 // (exactly what a token's CKM_RSA_X_509 yields after normalization).
-func rawOAEPBlock(t *testing.T, key *rsa.PrivateKey, msg []byte) ([]byte, int) {
+func rawOAEPBlock(t *testing.T, key *rsa.PrivateKey, msg []byte) (em []byte, k int) {
 	t.Helper()
 	ct, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, &key.PublicKey, msg, nil)
 	if err != nil {
@@ -39,8 +39,8 @@ func rawOAEPBlock(t *testing.T, key *rsa.PrivateKey, msg []byte) ([]byte, int) {
 	}
 	c := new(big.Int).SetBytes(ct)
 	m := new(big.Int).Exp(c, key.D, key.N)
-	k := (key.N.BitLen() + 7) / 8
-	em := make([]byte, k)
+	k = (key.N.BitLen() + 7) / 8
+	em = make([]byte, k)
 	m.FillBytes(em)
 	return em, k
 }
