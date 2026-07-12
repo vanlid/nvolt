@@ -6,11 +6,11 @@ import (
 )
 
 var (
-	version  = "dev"
-	verbose  bool
-	debug    bool
-	quiet    bool
-	noColor  bool
+	version = "dev"
+	verbose bool
+	debug   bool
+	quiet   bool
+	noColor bool
 )
 
 var rootCmd = &cobra.Command{

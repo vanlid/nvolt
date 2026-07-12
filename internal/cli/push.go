@@ -258,7 +258,6 @@ func unwrapMasterKey(paths *vault.Paths, environment string) ([]byte, error) {
 	return masterKey, nil
 }
 
-
 func init() {
 	pushCmd.Flags().StringP("file", "f", "", "Environment file to encrypt")
 	pushCmd.Flags().StringP("env", "e", "default", "Environment name")
