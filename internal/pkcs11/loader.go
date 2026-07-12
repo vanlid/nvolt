@@ -50,7 +50,16 @@ func (m *Module) initialize() error {
 }
 
 // Open dlopens the module and resolves its function list via C_GetFunctionList.
+// The "embedded" sentinel is materialized to a real file first, so nvolt's
+// built-in wolfPKCS11 module loads like any other path.
 func Open(path string) (*Module, error) {
+	if path == embeddedModuleSentinel {
+		extracted, err := extractEmbeddedModule()
+		if err != nil {
+			return nil, err
+		}
+		path = extracted
+	}
 	handle, err := dlopen(path)
 	if err != nil {
 		return nil, fmt.Errorf("dlopen %q: %w", path, err)

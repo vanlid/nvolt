@@ -5,6 +5,10 @@ bin/
 *.so
 *.dylib
 
+# Embedded wolfPKCS11 module (produced by build/pkcs11/build-module.sh,
+# consumed by //go:embed under the wolfpkcs11_embed build tag)
+internal/pkcs11/dist/module.bin
+
 # Test artifacts
 *.test
 *.out
@@ -33,3 +37,8 @@ test_vault/
 CLD.md
 TASKS.md
 .nvolt/
+
+# Statically-linked wolfPKCS11 archives + headers (produced by
+# build/pkcs11/build-module.sh with STATIC_ARCHIVES, consumed by cgo under the
+# wolfpkcs11_static build tag)
+internal/pkcs11/dist/static/

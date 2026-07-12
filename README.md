@@ -339,6 +339,13 @@ nvolt pkcs11 generate --token my-yubikey --label my-key --id 01 --bits 2048
 
 nvolt can keep this machine's private key on a hardware token (like a YubiKey) instead of in a file. The key is created on the device and never leaves it — nvolt only sees the public key, and the token itself does the decryption.
 
+**Which binary do I need?** The static binary from `install.nvolt.io` and `go install github.com/iluxav/nvolt/cmd/nvolt@latest` is software-keys-only — it doesn't include PKCS#11 support at all, by design (that's what keeps it a small, fully static binary). To reach a hardware token or TPM, build (or download) one of the other variants:
+
+- **Hardware tokens (YubiKey, OpenSC) or a TPM** — build with `-tags pkcs11`: `go install -tags pkcs11 github.com/iluxav/nvolt/cmd/nvolt@latest` works cross-platform (Linux, Windows, macOS) since this variant stays cgo-free. Prebuilt binaries for this variant are published as GitHub Release assets, not through the default install script.
+- **TPM only, fully static (Alpine/scratch/musl containers)** — `nvolt-tpm`, built with `-tags wolfpkcs11_static`. Linux only, and not `go install`-able (it needs prebuilt wolfPKCS11 static archives); also published as a GitHub Release asset.
+
+See [`build/pkcs11/README.md`](build/pkcs11/README.md#build-variants) for the full variant matrix and per-platform details.
+
 A typical setup looks like this:
 
 ```bash

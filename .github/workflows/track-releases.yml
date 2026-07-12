@@ -1,0 +1,281 @@
+name: Track wolf + upstream nvolt releases
+
+# This fork bundles wolfSSL/wolfTPM/wolfPKCS11 (pinned in
+# build/pkcs11/versions.env) and is itself a fork of iluxav/nvolt. Both can
+# move independently of this repo:
+#
+#   Job A (wolf-track):     detects new wolfSSL/wolfTPM/wolfPKCS11 releases
+#                            and opens a PR bumping build/pkcs11/versions.env.
+#   Job B (upstream-track):  detects a new iluxav/nvolt release not yet
+#                            merged into this fork and opens a tracking issue
+#                            (auto-merge is not attempted — too risky to do
+#                            unattended against fork-only PKCS#11/TPM code).
+#
+# Neither job rebuilds/republishes here; once a versions.env bump or an
+# upstream merge lands on the default branch, the existing release matrix
+# (.github/workflows/release.yml) builds and publishes the bundled binaries
+# as usual.
+#
+# Security note: values fetched from the GitHub API (tag names, release
+# metadata) are untrusted input. They are never spliced directly into a
+# `run:` shell block via a `${{ }}` expression — each is passed through a
+# step's `env:` mapping first and referenced as a quoted shell variable
+# (e.g. "$WOLFSSL_LATEST"), which is the safe pattern recommended by GitHub
+# for avoiding script-injection via workflow expressions.
+
+on:
+  schedule:
+    # 04:17 UTC daily — an off-the-hour time to avoid GitHub's cron congestion
+    # windows at :00.
+    - cron: "17 4 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  # ---------------------------------------------------------------------
+  # Job A: wolfSSL / wolfTPM / wolfPKCS11 release tracking.
+  # ---------------------------------------------------------------------
+  wolf-track:
+    name: Track wolfSSL/wolfTPM/wolfPKCS11 releases
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch latest upstream wolf release tags
+        id: fetch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          get_latest_tag() {
+            local repo="$1"
+            local tag=""
+            tag=$(gh release list --repo "$repo" --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || true)
+            if [[ -z "$tag" || "$tag" == "null" ]]; then
+              tag=$(gh api "repos/$repo/tags" --jq '.[0].name' 2>/dev/null || true)
+            fi
+            printf '%s' "$tag"
+          }
+
+          wolfssl_latest=$(get_latest_tag "wolfSSL/wolfssl")
+          wolftpm_latest=$(get_latest_tag "wolfSSL/wolfTPM")
+          wolfpkcs11_latest=$(get_latest_tag "wolfSSL/wolfPKCS11")
+
+          echo "Latest wolfssl:    ${wolfssl_latest:-<none found>}"
+          echo "Latest wolftpm:    ${wolftpm_latest:-<none found>}"
+          echo "Latest wolfpkcs11: ${wolfpkcs11_latest:-<none found>}"
+
+          {
+            echo "wolfssl_latest=$wolfssl_latest"
+            echo "wolftpm_latest=$wolftpm_latest"
+            echo "wolfpkcs11_latest=$wolfpkcs11_latest"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Compare against pinned versions.env
+        id: compare
+        env:
+          WOLFSSL_LATEST: ${{ steps.fetch.outputs.wolfssl_latest }}
+          WOLFTPM_LATEST: ${{ steps.fetch.outputs.wolftpm_latest }}
+          WOLFPKCS11_LATEST: ${{ steps.fetch.outputs.wolfpkcs11_latest }}
+        run: |
+          set -euo pipefail
+          source build/pkcs11/versions.env
+
+          echo "Pinned:  wolfssl=$WOLFSSL_TAG wolftpm=$WOLFTPM_TAG wolfpkcs11=$WOLFPKCS11_TAG"
+          echo "Latest:  wolfssl=$WOLFSSL_LATEST wolftpm=$WOLFTPM_LATEST wolfpkcs11=$WOLFPKCS11_LATEST"
+
+          changed=false
+          if [[ -n "$WOLFSSL_LATEST" && "$WOLFSSL_LATEST" != "null" && "$WOLFSSL_LATEST" != "$WOLFSSL_TAG" ]]; then
+            changed=true
+          fi
+          if [[ -n "$WOLFTPM_LATEST" && "$WOLFTPM_LATEST" != "null" && "$WOLFTPM_LATEST" != "$WOLFTPM_TAG" ]]; then
+            changed=true
+          fi
+          if [[ -n "$WOLFPKCS11_LATEST" && "$WOLFPKCS11_LATEST" != "null" && "$WOLFPKCS11_LATEST" != "$WOLFPKCS11_TAG" ]]; then
+            changed=true
+          fi
+
+          if [[ "$changed" == "true" ]]; then
+            echo "Pins are stale — a bump PR is needed."
+          else
+            echo "Pins already match the latest upstream releases — no-op."
+          fi
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+
+      - name: Open PR bumping versions.env
+        if: steps.compare.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WOLFSSL_LATEST: ${{ steps.fetch.outputs.wolfssl_latest }}
+          WOLFTPM_LATEST: ${{ steps.fetch.outputs.wolftpm_latest }}
+          WOLFPKCS11_LATEST: ${{ steps.fetch.outputs.wolfpkcs11_latest }}
+          BASE_REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          source build/pkcs11/versions.env
+
+          # Only accept tag-shaped strings (defense in depth: the API result
+          # is untrusted input and this file feeds a checked-out build
+          # script). Anything unexpected falls back to the current pin
+          # instead of being written out.
+          is_safe_tag() {
+            [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]
+          }
+
+          new_wolfssl="$WOLFSSL_TAG"
+          new_wolftpm="$WOLFTPM_TAG"
+          new_wolfpkcs11="$WOLFPKCS11_TAG"
+          is_safe_tag "$WOLFSSL_LATEST" && new_wolfssl="$WOLFSSL_LATEST"
+          is_safe_tag "$WOLFTPM_LATEST" && new_wolftpm="$WOLFTPM_LATEST"
+          is_safe_tag "$WOLFPKCS11_LATEST" && new_wolfpkcs11="$WOLFPKCS11_LATEST"
+
+          branch="ci/bump-wolf-pins-${new_wolfssl}-${new_wolftpm}-${new_wolfpkcs11}"
+          branch=$(printf '%s' "$branch" | tr -c 'A-Za-z0-9._-' '-')
+
+          # Idempotency: skip if a PR for this exact branch is already open.
+          existing=$(gh pr list --state open --json headRefName --jq '.[].headRefName')
+          if printf '%s\n' "$existing" | grep -qxF "$branch"; then
+            echo "PR already open for $branch — no-op."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+
+          {
+            echo "# Pinned upstream versions for the wolfSSL / wolfTPM / wolfPKCS11 build"
+            echo "# (bump deliberately; these are the tested set)."
+            echo "#"
+            echo "# Sourced by build/pkcs11/build-module.sh. Kept as a standalone file so a"
+            echo "# version bump is a one-line change here instead of an edit to the script,"
+            echo "# and so .github/workflows/track-releases.yml can detect + PR bumps"
+            echo "# automatically."
+            printf 'WOLFSSL_TAG=%s\n' "$new_wolfssl"
+            printf 'WOLFTPM_TAG=%s\n' "$new_wolftpm"
+            printf 'WOLFPKCS11_TAG=%s\n' "$new_wolfpkcs11"
+          } > build/pkcs11/versions.env
+
+          git add build/pkcs11/versions.env
+          git commit \
+            -m "chore(pkcs11): bump wolfSSL/wolfTPM/wolfPKCS11 pins" \
+            -m "Automated bump by .github/workflows/track-releases.yml (wolf-track job)."
+
+          git push origin "$branch"
+
+          body_file=$(mktemp)
+          {
+            echo "Automated pin bump detected by \`.github/workflows/track-releases.yml\`."
+            echo
+            echo "| Component | Old pin | New pin |"
+            echo "|---|---|---|"
+            echo "| wolfSSL | \`$WOLFSSL_TAG\` | \`$new_wolfssl\` |"
+            echo "| wolfTPM | \`$WOLFTPM_TAG\` | \`$new_wolftpm\` |"
+            echo "| wolfPKCS11 | \`$WOLFPKCS11_TAG\` | \`$new_wolfpkcs11\` |"
+            echo
+            echo "Verify \`build/pkcs11/build-module.sh\` still builds against the new tags before merging — the release matrix (\`release.yml\`) will rebuild and publish \`nvolt-*-pkcs11\`/\`nvolt-tpm-*\` once this lands on \`$BASE_REF\`."
+          } > "$body_file"
+
+          gh pr create \
+            --base "$BASE_REF" \
+            --head "$branch" \
+            --title "chore(pkcs11): bump wolfSSL/wolfTPM/wolfPKCS11 pins" \
+            --body-file "$body_file"
+
+  # ---------------------------------------------------------------------
+  # Job B: upstream nvolt (iluxav/nvolt) release tracking.
+  # ---------------------------------------------------------------------
+  upstream-track:
+    name: Track upstream iluxav/nvolt releases
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch upstream tags
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/iluxav/nvolt.git 2>/dev/null || true
+          git fetch upstream --tags --quiet
+
+      - name: Get latest upstream release
+        id: upstream
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag=$(gh release list --repo iluxav/nvolt --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || true)
+          if [[ -z "$tag" || "$tag" == "null" ]]; then
+            tag=$(gh api repos/iluxav/nvolt/tags --jq '.[0].name' 2>/dev/null || true)
+          fi
+          echo "Latest upstream release: ${tag:-<none found>}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether the fork already contains it
+        id: check
+        env:
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$UPSTREAM_TAG" || "$UPSTREAM_TAG" == "null" ]]; then
+            echo "No upstream release found — nothing to compare, no-op."
+            echo "new_release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! git rev-parse -q --verify "refs/tags/$UPSTREAM_TAG" >/dev/null; then
+            echo "Could not resolve refs/tags/$UPSTREAM_TAG after fetch — treating as new/unmerged."
+            echo "new_release=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          tag_commit=$(git rev-list -n 1 "refs/tags/$UPSTREAM_TAG")
+          if git merge-base --is-ancestor "$tag_commit" HEAD; then
+            echo "Fork already contains upstream release $UPSTREAM_TAG — up to date, no-op."
+            echo "new_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Fork does NOT yet contain upstream release $UPSTREAM_TAG — new release detected."
+            echo "new_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open tracking issue for unmerged upstream release
+        if: steps.check.outputs.new_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          set -euo pipefail
+          title="Upstream nvolt release $UPSTREAM_TAG not yet merged into this fork"
+
+          # Idempotency: skip if an open issue with this exact title exists.
+          existing=$(gh issue list --state open --json title --jq '.[].title')
+          if printf '%s\n' "$existing" | grep -qxF "$title"; then
+            echo "Tracking issue already open for $UPSTREAM_TAG — no-op."
+            exit 0
+          fi
+
+          body_file=$(mktemp)
+          {
+            echo "iluxav/nvolt published release \`$UPSTREAM_TAG\`, which this fork (vanlid/nvolt) has not yet merged or rebased onto."
+            echo
+            echo "Auto-merging is not attempted here — this fork carries fork-only PKCS#11/TPM changes that a blind merge/rebase could silently conflict with. Please review and merge manually:"
+            echo
+            echo '```'
+            echo "git fetch upstream"
+            echo "git merge upstream/$UPSTREAM_TAG   # or: git rebase upstream/$UPSTREAM_TAG"
+            echo '```'
+            echo
+            echo "Once merged, the release matrix (\`.github/workflows/release.yml\`) will rebuild and publish \`nvolt-*-pkcs11\`/\`nvolt-tpm-*\` reflecting both this upstream tag and the pinned wolf tags."
+            echo
+            echo "Opened automatically by \`.github/workflows/track-releases.yml\`."
+          } > "$body_file"
+
+          gh issue create --title "$title" --body-file "$body_file"

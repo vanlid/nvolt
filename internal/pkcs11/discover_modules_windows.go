@@ -1,4 +1,4 @@
-//go:build windows
+//go:build pkcs11 && windows
 
 package pkcs11
 
@@ -46,7 +46,7 @@ func DetectModules() []DiscoveredModule {
 		add(path, "path")
 	}
 
-	return mods
+	return appendEmbeddedOption(mods, embeddedModuleAvailable)
 }
 
 // registryModuleCandidates reads known vendor registry keys and derives the
