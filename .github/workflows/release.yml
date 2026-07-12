@@ -17,8 +17,51 @@ env:
   MUSL_CROSS_URL: "https://musl.cc/aarch64-linux-musl-cross.tgz"
 
 jobs:
+  # Compute the version ONCE so the injected binary version and the release
+  # title can never drift apart.
+  version:
+    name: Compute version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.compute.outputs.version }}
+      is_dev: ${{ steps.compute.outputs.is_dev }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # Full history + tags so `git describe` can see the release tags.
+          fetch-depth: 0
+
+      - name: Compute version
+        id: compute
+        run: |
+          if [[ "$GITHUB_REF" =~ ^refs/tags/v[0-9] ]]; then
+            # Tagged release: use the tag verbatim.
+            VERSION="${GITHUB_REF#refs/tags/}"
+            IS_DEV=false
+          else
+            # Dev build. Base ONLY on full release tags (vX.Y.Z): --match keeps
+            # v-number tags and drops the rolling 'dev' tag; --exclude '*-*'
+            # additionally drops pre-release tags like v0.2.0-rc1. SemVer-correct:
+            # bump the patch and mark it a pre-release so the dev build sorts
+            # AFTER the last release (v1.0.25) and before the next (v1.0.26).
+            DESC=$(git describe --tags --long --match 'v[0-9]*' --exclude '*-*' 2>/dev/null || true)
+            if [[ "$DESC" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)-([0-9]+)-(g[0-9a-f]+)$ ]]; then
+              NEXT_PATCH=$(( ${BASH_REMATCH[3]} + 1 ))
+              VERSION="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${NEXT_PATCH}-dev.${BASH_REMATCH[4]}.${BASH_REMATCH[5]}"
+            else
+              # No release tag anywhere in history.
+              VERSION="v0.0.0-dev.0.g${GITHUB_SHA::7}"
+            fi
+            IS_DEV=true
+          fi
+          echo "Computed version: $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "is_dev=$IS_DEV" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build ${{ matrix.output }}
+    needs: version
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -199,14 +242,9 @@ jobs:
           CGO_ENABLED: 0
           BUILD_TAGS: ${{ matrix.tags }}
           OUTPUT: ${{ matrix.output }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           set -euo pipefail
-          # Extract version from git tag (remove 'v' prefix if present)
-          VERSION=${GITHUB_REF#refs/tags/}
-          if [[ ! "$VERSION" =~ ^v[0-9] ]]; then
-            VERSION="dev"
-          fi
-
           TAGS_ARGS=()
           if [ -n "$BUILD_TAGS" ]; then
             TAGS_ARGS=(-tags "$BUILD_TAGS")
@@ -222,13 +260,9 @@ jobs:
           CGO_ENABLED: 1
           CC: ${{ matrix.musl_cc }}
           OUTPUT: ${{ matrix.output }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           set -euo pipefail
-          VERSION=${GITHUB_REF#refs/tags/}
-          if [[ ! "$VERSION" =~ ^v[0-9] ]]; then
-            VERSION="dev"
-          fi
-
           go build -trimpath -tags "wolfpkcs11_static netgo osusergo" \
             -ldflags="-s -w -X github.com/iluxav/nvolt/internal/cli.version=${VERSION} -linkmode external -extldflags \"-static\"" \
             -o "$OUTPUT" cmd/nvolt/main.go
@@ -251,7 +285,12 @@ jobs:
 
   upload-to-r2:
     name: Upload binaries to R2
-    needs: build
+    needs: [version, build]
+    # R2 / install.nvolt.io is the UPSTREAM distribution channel. This fork
+    # publishes to GitHub Releases (github-release job below), so this job is
+    # gated to the upstream repo and never runs here — kept to minimise
+    # divergence from upstream and preserve the option.
+    if: github.repository == 'iluxav/nvolt' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -283,56 +322,70 @@ jobs:
           acl = private
           EOF
 
-      - name: Upload binaries to R2
+      - name: Upload binaries + checksums to R2
         env:
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
-          # Get version from tag or use 'latest'
-          VERSION=${GITHUB_REF#refs/tags/}
-          if [[ ! "$VERSION" =~ ^v[0-9] ]]; then
-            VERSION="latest"
-          fi
-
-          # Move all binaries to a flat structure
+          # Flatten binaries + include the install script, then checksum.
           mkdir -p upload
           find ./binaries -type f -exec mv {} ./upload/ \;
-
-          # Copy install script
           cp install.sh upload/install.sh
           chmod +x upload/install.sh
+          (cd upload && sha256sum * > SHA256SUMS)
 
-          # Upload each binary to R2
-          for binary in ./upload/*; do
-            filename=$(basename "$binary")
-            echo "Uploading $filename to R2..."
-
-            # Upload with version
-            rclone copy "$binary" "r2:${R2_BUCKET_NAME}/${VERSION}/" --s3-no-check-bucket --progress
-
-            # Also upload to 'latest' if this is a tagged release
-            if [[ "$VERSION" =~ ^v[0-9] ]]; then
-              rclone copy "$binary" "r2:${R2_BUCKET_NAME}/latest/" --s3-no-check-bucket --progress
-            fi
+          # This job only runs on tags, so publish to both the version dir and
+          # the rolling 'latest/' prefix.
+          for f in ./upload/*; do
+            rclone copy "$f" "r2:${R2_BUCKET_NAME}/${VERSION}/" --s3-no-check-bucket --progress
+            rclone copy "$f" "r2:${R2_BUCKET_NAME}/latest/" --s3-no-check-bucket --progress
           done
+          echo "All binaries uploaded to R2."
 
-          echo "All binaries uploaded successfully!"
+  github-release:
+    name: Publish binaries to GitHub Releases
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Generate checksums
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./binaries
+
+      - name: Collect binaries + checksums
         run: |
-          cd upload
-          sha256sum * > SHA256SUMS
+          mkdir -p upload
+          find ./binaries -type f -exec mv {} ./upload/ \;
+          cp install.sh upload/install.sh
+          chmod +x upload/install.sh
+          (cd upload && sha256sum * > SHA256SUMS)
 
-      - name: Upload checksums to R2
+      - name: Publish to GitHub Releases
         env:
-          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+          IS_DEV: ${{ needs.version.outputs.is_dev }}
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
-          if [[ ! "$VERSION" =~ ^v[0-9] ]]; then
-            VERSION="latest"
-          fi
-
-          rclone copy upload/SHA256SUMS "r2:${R2_BUCKET_NAME}/${VERSION}/" --s3-no-check-bucket --progress
-
-          if [[ "$VERSION" =~ ^v[0-9] ]]; then
-            rclone copy upload/SHA256SUMS "r2:${R2_BUCKET_NAME}/latest/" --s3-no-check-bucket --progress
+          if [[ "$IS_DEV" == "false" ]]; then
+            # Tagged release: publish under the tag; pre-release for any tag
+            # carrying a pre-release suffix (e.g. v0.2.0-rc1).
+            PRERELEASE=""
+            [[ "$VERSION" == *-* ]] && PRERELEASE="--prerelease"
+            gh release create "$VERSION" ./upload/* \
+              --title "$VERSION" --generate-notes $PRERELEASE
+          else
+            # workflow_dispatch: a single rolling "dev" pre-release. The TAG stays
+            # "dev" (stable URL, re-pointed at the built commit each run); the
+            # TITLE carries the full SemVer dev version, matching `nvolt version`.
+            gh release delete dev --yes --cleanup-tag 2>/dev/null || true
+            gh release create dev ./upload/* \
+              --target "$GITHUB_SHA" \
+              --title "$VERSION" \
+              --prerelease \
+              --notes "Rolling development build \`${VERSION}\` (commit \`${GITHUB_SHA}\`) — not a stable release. The \`dev\` tag always points at the newest dev build."
           fi

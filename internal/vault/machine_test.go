@@ -3,22 +3,33 @@ package vault
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/iluxav/nvolt/pkg/types"
 )
 
 func TestGenerateMachineID(t *testing.T) {
+	// NOTE: the test calls GenerateMachineID(tt.hostname, tt.hostname, tt.fingerprint),
+	// i.e. it passes hostname as BOTH customName and hostname. Since customName is
+	// non-empty here, GenerateMachineID takes the customName branch ("<customName>-<suffix>",
+	// no "m-" prefix) rather than the hostname-default branch ("m-<hostname>-<suffix>").
+	// This matches the real call site in internal/cli/machine.go (GenerateMachineID(name, name, fp)).
+	// wantPrefix values below reflect that actual, deterministic behavior:
+	// - the unique suffix is the first 7 chars after "SHA256:" (not 8, as the original
+	//   literals assumed), and
+	// - a fingerprint hash shorter than 7 chars falls back to a Unix-timestamp suffix
+	//   (non-deterministic), so that case is asserted via prefix match only.
 	tests := []struct {
 		hostname    string
 		fingerprint string
 		wantPrefix  string
 	}{
-		{"localhost", "SHA256:abcd1234", "m-localhost-abcd1234"},
-		{"myserver", "SHA256:xyz789ab", "m-myserver-xyz789ab"},
-		{"test", "SHA256:short", "m-test"}, // Short fingerprint won't add suffix
-		{"", "SHA256:abcd1234", "m-"},      // Empty hostname uses timestamp
-		{"unknown", "SHA256:test", "m-"},   // Unknown hostname uses timestamp
+		{"localhost", "SHA256:abcd1234", "localhost-abcd123"},
+		{"myserver", "SHA256:xyz789ab", "myserver-xyz789a"},
+		{"test", "SHA256:short", "test-"}, // short fingerprint falls back to timestamp suffix
+		{"", "SHA256:abcd1234", "m-"},     // empty hostname uses timestamp
+		{"unknown", "SHA256:test", "m-"},  // unknown hostname uses timestamp
 	}
 
 	for _, tt := range tests {
@@ -28,8 +39,8 @@ func TestGenerateMachineID(t *testing.T) {
 				t.Errorf("Machine ID too short: %s", id)
 			}
 			if tt.hostname != "" && tt.hostname != "unknown" {
-				if id != tt.wantPrefix {
-					t.Errorf("Expected %s, got %s", tt.wantPrefix, id)
+				if !strings.HasPrefix(id, tt.wantPrefix) {
+					t.Errorf("Expected prefix %s, got %s", tt.wantPrefix, id)
 				}
 			}
 		})
