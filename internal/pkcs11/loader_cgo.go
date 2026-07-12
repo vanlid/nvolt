@@ -40,6 +40,23 @@ func Open(_ string) (*Module, error) {
 	return &Module{fnList: unsafe.Pointer(list)}, nil
 }
 
+// initialize calls C_Initialize exactly once per module. Cryptoki forbids a
+// second C_Initialize without an intervening C_Finalize; wolfPKCS11 reports the
+// benign CKR_CRYPTOKI_ALREADY_INITIALIZED when another Module already did so
+// (ListTokensAndKeys opens its own Module), which is treated as success. A NULL
+// pInitArgs is passed for parity with the purego loader (no OS-locking args).
+func (m *Module) initialize() error {
+	if m.initialized {
+		return nil
+	}
+	rv := C.C_Initialize(nil)
+	if rv != C.CKR_OK && rv != C.CKR_CRYPTOKI_ALREADY_INITIALIZED {
+		return fmt.Errorf("C_Initialize: 0x%X", uint(rv))
+	}
+	m.initialized = true
+	return nil
+}
+
 // Close finalizes the library if it was initialized. In this loader there is no
 // dlopen handle to release; the archive stays mapped for the process lifetime.
 func (m *Module) Close() error {
