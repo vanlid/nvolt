@@ -10,16 +10,17 @@ import (
 )
 
 // DiscoveredModule describes one PKCS#11 provider found by DetectModules.
-// Source records how it was discovered ("p11-kit", "path" or "registry") so
-// callers can label and order the results sensibly. It lives here (untagged)
-// rather than beside a loader-specific DetectModules because it is a plain
-// data type shared across build variants.
+// Source records how it was discovered ("p11-kit", "path", "registry",
+// "embedded" or "builtin") so callers can label and order the results
+// sensibly. It lives here (untagged) rather than beside a loader-specific
+// DetectModules because it is a plain data type shared across build variants.
 //
 // Name is the concise, user-facing label shown by default in `pkcs11 list` and
-// the enrollment picker (e.g. "OpenSC"); Label carries the technical detail
-// (the module basename) surfaced only at -v alongside Path/Source. Path is
-// never displayed at the default level and remains the stored/CLI identifier,
-// unchanged by the display split.
+// the enrollment picker (e.g. "Built-in TPM module", "OpenSC"); Label carries
+// the technical detail ("wolfPKCS11 (built-in, TPM)", the module basename)
+// surfaced only at -v alongside Path/Source. Path is never displayed at the
+// default level and remains the stored/CLI identifier (a real path or the
+// "embedded"/"builtin" sentinel), unchanged by the display split.
 type DiscoveredModule struct {
 	Path   string
 	Name   string

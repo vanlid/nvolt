@@ -20,8 +20,8 @@ import (
 // "unknown command". It additionally requires a real PKCS#11 loader
 // (pkcs11 || tpm_static) because it drives pkcs11.Open/Session directly; the
 // Session.DeleteKeyByID / RelabelKeyByID methods it calls live in the loader
-// file (session.go) and ship in every such build — only this CLI surface is
-// gated.
+// files (session.go / session_cgo.go) and ship in every such build — only this
+// CLI surface is gated.
 
 var (
 	pkcs11DelModule  string

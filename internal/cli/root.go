@@ -1,7 +1,11 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
+
 	"github.com/iluxav/nvolt/internal/ui"
+	"github.com/iluxav/nvolt/internal/vault"
 	"github.com/spf13/cobra"
 )
 
@@ -38,6 +42,30 @@ enforced through wrapped key files.`,
 			ui.SetLevel(ui.LevelError)
 		} else {
 			ui.SetLevel(ui.LevelInfo)
+		}
+
+		// The embedded wolfPKCS11 TPM module prints its device caps banner
+		// (manufacturer, firmware, FIPS/CC-EAL) on C_Initialize only when
+		// NVOLT_TPM_CAPS is set — build/pkcs11/build-module.sh gates the
+		// otherwise-unconditional upstream printf behind it. Surface that detail
+		// whenever the user asked for verbose/debug output. Only ever set it
+		// (never unset), and never override an operator-provided value.
+		if (debug || verbose) && os.Getenv("NVOLT_TPM_CAPS") == "" {
+			_ = os.Setenv("NVOLT_TPM_CAPS", "1")
+		}
+
+		// Point the embedded wolfPKCS11 module's filesystem token store at
+		// nvolt's own config dir (respecting NVOLT_CONFIG via GetHomePaths),
+		// unless the operator set WOLFPKCS11_TOKEN_PATH explicitly. Required on
+		// Windows: wolfPKCS11's built-in fallback getenv's a literal "%APPDIR%"
+		// (a cmd.exe expansion string, not a real variable name) which never
+		// resolves, so without this the store path is unset and C_Initialize
+		// can't create its token store. Only TPM-wrapped key blobs land here;
+		// the private keys never leave the TPM.
+		if os.Getenv("WOLFPKCS11_TOKEN_PATH") == "" {
+			if hp, err := vault.GetHomePaths(); err == nil {
+				_ = os.Setenv("WOLFPKCS11_TOKEN_PATH", filepath.Join(hp.Root, "pkcs11"))
+			}
 		}
 	},
 	Run: func(cmd *cobra.Command, args []string) {
