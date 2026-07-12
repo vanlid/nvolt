@@ -8,35 +8,117 @@ on:
 
 env:
   GO_VERSION: "1.24.3"
+  # llvm-mingw release used to cross-build the windows-arm64 embedded PKCS#11
+  # module (clang-based mingw toolchain; ships its own aarch64-w64-mingw32-gcc
+  # wrapper). Bump deliberately — this is the least-tested cross target.
+  LLVM_MINGW_VERSION: "20260616"
+  # Prebuilt aarch64 musl cross toolchain used for the nvolt-tpm linux-arm64
+  # fully-static build (apt has no arm64 musl cross package).
+  MUSL_CROSS_URL: "https://musl.cc/aarch64-linux-musl-cross.tgz"
 
 jobs:
   build:
-    name: Build binaries
+    name: Build ${{ matrix.output }}
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         include:
-          # Linux
-          - goos: linux
+          # ---------------------------------------------------------------
+          # Variant 1: default static, software-only. No build tags,
+          # CGO_ENABLED=0. This is the original 6-target matrix, unchanged.
+          # ---------------------------------------------------------------
+          - variant: static
+            goos: linux
             goarch: amd64
             output: nvolt-linux-amd64
-          - goos: linux
+          - variant: static
+            goos: linux
             goarch: arm64
             output: nvolt-linux-arm64
-          # macOS
-          - goos: darwin
+          - variant: static
+            goos: darwin
             goarch: amd64
             output: nvolt-darwin-amd64
-          - goos: darwin
+          - variant: static
+            goos: darwin
             goarch: arm64
             output: nvolt-darwin-arm64
-          # Windows
-          - goos: windows
+          - variant: static
+            goos: windows
             goarch: amd64
             output: nvolt-windows-amd64.exe
-          - goos: windows
+          - variant: static
+            goos: windows
             goarch: arm64
             output: nvolt-windows-arm64.exe
+
+          # ---------------------------------------------------------------
+          # Variant 2: pkcs11 dynamic. -tags pkcs11 (cgo-free, CGO_ENABLED=0).
+          # On the TPM targets (linux + windows) also embed the wolfPKCS11
+          # module built by build/pkcs11/build-module.sh, via the extra
+          # wolfpkcs11_embed tag. Darwin has no TPM, so pkcs11 only.
+          # ---------------------------------------------------------------
+          - variant: pkcs11
+            goos: linux
+            goarch: amd64
+            output: nvolt-linux-amd64-pkcs11
+            tags: "pkcs11 wolfpkcs11_embed"
+            pkcs11_target: linux-amd64
+            cross_setup: "" # native gcc/make already on the runner
+          - variant: pkcs11
+            goos: linux
+            goarch: arm64
+            output: nvolt-linux-arm64-pkcs11
+            tags: "pkcs11 wolfpkcs11_embed"
+            pkcs11_target: linux-arm64
+            cross_setup: arm64-gnu
+          - variant: pkcs11
+            goos: windows
+            goarch: amd64
+            output: nvolt-windows-amd64-pkcs11.exe
+            tags: "pkcs11 wolfpkcs11_embed"
+            pkcs11_target: windows-amd64
+            cross_setup: mingw64
+          - variant: pkcs11
+            goos: windows
+            goarch: arm64
+            output: nvolt-windows-arm64-pkcs11.exe
+            tags: "pkcs11 wolfpkcs11_embed"
+            pkcs11_target: windows-arm64
+            cross_setup: llvm-mingw
+          - variant: pkcs11
+            goos: darwin
+            goarch: amd64
+            output: nvolt-darwin-amd64-pkcs11
+            tags: "pkcs11"
+            pkcs11_target: "" # no TPM on macOS -> no embedded module
+            cross_setup: ""
+          - variant: pkcs11
+            goos: darwin
+            goarch: arm64
+            output: nvolt-darwin-arm64-pkcs11
+            tags: "pkcs11"
+            pkcs11_target: ""
+            cross_setup: ""
+
+          # ---------------------------------------------------------------
+          # Variant 3: nvolt-tpm, fully-static cgo binary (musl libc), Linux
+          # only. wolfSSL/wolfTPM/wolfPKCS11 built as static archives and
+          # linked in with -tags wolfpkcs11_static, CGO_ENABLED=1.
+          # ---------------------------------------------------------------
+          - variant: tpm
+            goos: linux
+            goarch: amd64
+            output: nvolt-tpm-linux-amd64
+            cross_setup: musl-native
+            musl_cc: musl-gcc
+          - variant: tpm
+            goos: linux
+            goarch: arm64
+            output: nvolt-tpm-linux-arm64
+            cross_setup: musl-arm64
+            musl_cc: aarch64-linux-musl-gcc
 
     steps:
       - name: Checkout code
@@ -47,20 +129,118 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
+      # -----------------------------------------------------------------
+      # Cross-toolchain / build-dependency installation (pkcs11 + tpm only)
+      # -----------------------------------------------------------------
+      - name: Install autotools + apt cross toolchain
+        if: matrix.variant != 'static'
+        env:
+          CROSS_SETUP: ${{ matrix.cross_setup }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          PKGS="autoconf automake libtool"
+          case "$CROSS_SETUP" in
+            arm64-gnu)   PKGS="$PKGS gcc-aarch64-linux-gnu" ;;
+            mingw64)     PKGS="$PKGS gcc-mingw-w64-x86-64" ;;
+            musl-native) PKGS="$PKGS musl-tools" ;;
+            *) ;; # llvm-mingw / musl-arm64 / native / darwin: toolchain installed by a later step (or none needed)
+          esac
+          sudo apt-get install -y $PKGS
+
+      - name: Install llvm-mingw (windows-arm64 pkcs11 cross toolchain)
+        if: matrix.cross_setup == 'llvm-mingw'
+        run: |
+          set -euo pipefail
+          asset="llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-ubuntu-22.04-x86_64.tar.xz"
+          curl -fsSL -o /tmp/llvm-mingw.tar.xz \
+            "https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW_VERSION}/${asset}"
+          sudo tar -xJf /tmp/llvm-mingw.tar.xz -C /opt
+          echo "/opt/llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-ubuntu-22.04-x86_64/bin" >> "$GITHUB_PATH"
+
+      - name: Install musl cross toolchain (nvolt-tpm linux-arm64)
+        if: matrix.cross_setup == 'musl-arm64'
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/musl-cross.tgz "$MUSL_CROSS_URL"
+          sudo tar -xzf /tmp/musl-cross.tgz -C /opt
+          echo "/opt/aarch64-linux-musl-cross/bin" >> "$GITHUB_PATH"
+
+      # -----------------------------------------------------------------
+      # Build the embedded wolfPKCS11 module (pkcs11 variant, TPM targets)
+      # -----------------------------------------------------------------
+      - name: Build embedded wolfPKCS11 module
+        if: matrix.variant == 'pkcs11' && matrix.pkcs11_target != ''
+        env:
+          TARGET: ${{ matrix.pkcs11_target }}
+        run: |
+          set -euo pipefail
+          TARGET="$TARGET" build/pkcs11/build-module.sh
+
+      # -----------------------------------------------------------------
+      # Build static wolfSSL/wolfTPM/wolfPKCS11 archives (nvolt-tpm variant)
+      # -----------------------------------------------------------------
+      - name: Build static wolfPKCS11 archives (musl)
+        if: matrix.variant == 'tpm'
+        env:
+          CC: ${{ matrix.musl_cc }}
+        run: |
+          set -euo pipefail
+          STATIC_ARCHIVES=internal/pkcs11/dist/static TPM_INTERFACE=devtpm build/pkcs11/build-module.sh /dev/null
+
+      # -----------------------------------------------------------------
+      # Build the Go binary
+      # -----------------------------------------------------------------
       - name: Build binary
+        if: matrix.variant != 'tpm'
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
+          BUILD_TAGS: ${{ matrix.tags }}
+          OUTPUT: ${{ matrix.output }}
         run: |
+          set -euo pipefail
           # Extract version from git tag (remove 'v' prefix if present)
           VERSION=${GITHUB_REF#refs/tags/}
           if [[ ! "$VERSION" =~ ^v[0-9] ]]; then
             VERSION="dev"
           fi
 
-          # Build with version injected
-          go build -trimpath -ldflags="-s -w -X github.com/iluxav/nvolt/internal/cli.version=${VERSION}" -o ${{ matrix.output }} cmd/nvolt/main.go
+          TAGS_ARGS=()
+          if [ -n "$BUILD_TAGS" ]; then
+            TAGS_ARGS=(-tags "$BUILD_TAGS")
+          fi
+
+          go build -trimpath "${TAGS_ARGS[@]}" -ldflags="-s -w -X github.com/iluxav/nvolt/internal/cli.version=${VERSION}" -o "$OUTPUT" cmd/nvolt/main.go
+
+      - name: Build nvolt-tpm binary (static musl, cgo)
+        if: matrix.variant == 'tpm'
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 1
+          CC: ${{ matrix.musl_cc }}
+          OUTPUT: ${{ matrix.output }}
+        run: |
+          set -euo pipefail
+          VERSION=${GITHUB_REF#refs/tags/}
+          if [[ ! "$VERSION" =~ ^v[0-9] ]]; then
+            VERSION="dev"
+          fi
+
+          go build -trimpath -tags "wolfpkcs11_static netgo osusergo" \
+            -ldflags="-s -w -X github.com/iluxav/nvolt/internal/cli.version=${VERSION} -linkmode external -extldflags \"-static\"" \
+            -o "$OUTPUT" cmd/nvolt/main.go
+
+      - name: Verify nvolt-tpm is statically linked
+        if: matrix.variant == 'tpm'
+        env:
+          OUTPUT: ${{ matrix.output }}
+        run: |
+          set -euo pipefail
+          file "$OUTPUT"
+          file "$OUTPUT" | grep -q "statically linked"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
