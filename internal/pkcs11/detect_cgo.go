@@ -9,6 +9,7 @@ package pkcs11
 func DetectModules() []DiscoveredModule {
 	return []DiscoveredModule{{
 		Path:   "builtin",
+		Name:   "Built-in TPM module",
 		Label:  "wolfPKCS11 (static, TPM)",
 		Source: "builtin",
 	}}

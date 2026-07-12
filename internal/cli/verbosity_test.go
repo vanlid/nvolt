@@ -18,17 +18,18 @@ import (
 )
 
 // TestPkcs11ModuleListingDefaultOmitsPathSource proves printModuleListing's
-// concise Info summary (the module label only) never leaks the module's
-// filesystem Path or discovery Source, and that both appear once the level is
-// raised to Verbose. Uses a synthetic pkcs11.DiscoveredModule, so no SoftHSM
-// fixture is required.
+// concise Info summary shows only the user-facing Name (never the technical
+// Label, filesystem Path, or discovery Source), and that the technical Label,
+// Path and Source all appear once the level is raised to Verbose. Uses a
+// synthetic pkcs11.DiscoveredModule, so no SoftHSM fixture is required.
 func TestPkcs11ModuleListingDefaultOmitsPathSource(t *testing.T) {
 	ui.SetLevel(ui.LevelInfo)
 	defer ui.SetLevel(ui.LevelInfo)
 
 	mod := pkcs11.DiscoveredModule{
 		Path:   "/usr/lib/softhsm/libsofthsm2.so",
-		Label:  "SoftHSM2",
+		Name:   "SoftHSM",
+		Label:  "libsofthsm2 (technical)",
 		Source: "path",
 	}
 
@@ -42,8 +43,11 @@ func TestPkcs11ModuleListingDefaultOmitsPathSource(t *testing.T) {
 	if strings.Contains(out, ".so") {
 		t.Fatalf("default (Info) module listing leaked the module path:\n%s", out)
 	}
-	if !strings.Contains(out, "SoftHSM2") {
-		t.Fatalf("expected the module label in default output:\n%s", out)
+	if strings.Contains(out, "technical") {
+		t.Fatalf("default (Info) module listing leaked the technical Label:\n%s", out)
+	}
+	if !strings.Contains(out, "SoftHSM") {
+		t.Fatalf("expected the concise module Name in default output:\n%s", out)
 	}
 
 	ui.SetLevel(ui.LevelVerbose)
@@ -56,6 +60,9 @@ func TestPkcs11ModuleListingDefaultOmitsPathSource(t *testing.T) {
 	}
 	if !strings.Contains(vout, ".so") {
 		t.Fatalf("expected the module path at Verbose level:\n%s", vout)
+	}
+	if !strings.Contains(vout, "technical") {
+		t.Fatalf("expected the technical module Label at Verbose level:\n%s", vout)
 	}
 	if !strings.Contains(vout, "path") {
 		t.Fatalf("expected the module source at Verbose level:\n%s", vout)

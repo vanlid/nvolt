@@ -1,16 +1,48 @@
 package pkcs11
 
-import "fmt"
+import (
+	"fmt"
+	"path/filepath"
+	"strings"
+)
 
 // DiscoveredModule describes one PKCS#11 provider found by DetectModules.
 // Source records how it was discovered ("p11-kit", "path", "registry",
 // "embedded" or "builtin") so callers can label and order the results
 // sensibly. It lives here (untagged) rather than beside a loader-specific
 // DetectModules because it is a plain data type shared across build variants.
+//
+// Name is the concise, user-facing label shown by default in `pkcs11 list` and
+// the enrollment picker (e.g. "Built-in TPM module", "OpenSC"); Label carries
+// the technical detail ("wolfPKCS11 (built-in, TPM)", the module basename)
+// surfaced only at -v alongside Path/Source. Path is never displayed at the
+// default level and remains the stored/CLI identifier (a real path or the
+// "embedded"/"builtin" sentinel), unchanged by the display split.
 type DiscoveredModule struct {
 	Path   string
+	Name   string
 	Label  string
 	Source string
+}
+
+// friendlyModuleName maps a PKCS#11 module's file basename to a short,
+// user-facing name for the picker and `pkcs11 list` (e.g. "opensc-pkcs11.so"
+// -> "OpenSC"), so the default display carries no path or vendor library name.
+// An unrecognized module falls back to its basename unchanged.
+func friendlyModuleName(basename string) string {
+	lower := strings.ToLower(filepath.Base(basename))
+	switch {
+	case strings.Contains(lower, "opensc"):
+		return "OpenSC"
+	case strings.Contains(lower, "ykcs11"):
+		return "YubiKey"
+	case strings.Contains(lower, "p11-kit"):
+		return "p11-kit"
+	case strings.Contains(lower, "softhsm"):
+		return "SoftHSM"
+	default:
+		return filepath.Base(basename)
+	}
 }
 
 // CKRV is a PKCS#11 CK_RV return code.

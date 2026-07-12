@@ -8,6 +8,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,14 +22,59 @@ import (
 	"github.com/iluxav/nvolt/pkg/types"
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
-// selectOptionStdio is selectOption (see prompt.go) wired to the real terminal
-// (os.Stdout/os.Stdin). It lives here, beside its only callers in the
-// interactive pkcs11 wizard, so it shares their build tag; tests exercise
-// selectOption directly with an injected reader/writer.
+// selectOptionStdio is the interactive selection wired to the real terminal
+// (os.Stdout/os.Stdin). It lives here, beside its only callers in the pkcs11
+// wizard, so it shares their build tag; tests exercise selectOption directly
+// with an injected reader/writer.
+//
+// On a real terminal it reads the choice through golang.org/x/term — the same
+// native-console path pinentry.Read uses — because bufio.Scanner on os.Stdin
+// does NOT accept input on the Windows console (the process hangs at the
+// prompt). When stdin is not a real terminal (an MSYS/Cygwin pipe, a redirected
+// file, or a test's injected reader), it falls back to selectOption's plain
+// bufio line reader, which works there and keeps selectOption unit-testable.
 func selectOptionStdio(title string, options []string) (int, error) {
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		return selectOptionViaTerm(title, options)
+	}
 	return selectOption(os.Stdout, os.Stdin, title, options)
+}
+
+// selectOptionViaTerm renders the same numbered menu as selectOption but reads
+// the choice with term.ReadPassword (no echo), mirroring exactly how
+// pinentry.Read collects the PIN via the native console API — the one input
+// path proven to work on the Windows console. Because the read is not echoed,
+// it echoes the resolved choice back ("→ selected: [n] label") so the user sees
+// what they picked; reading a short menu number without echo is an acceptable
+// price for reusing the proven path rather than adding new Windows console code.
+func selectOptionViaTerm(title string, options []string) (int, error) {
+	if len(options) == 0 {
+		return 0, fmt.Errorf("selectOption: no options to choose from")
+	}
+	_, _ = fmt.Fprintln(os.Stdout, title)
+	for i, opt := range options {
+		_, _ = fmt.Fprintf(os.Stdout, "  [%d] %s\n", i+1, opt)
+	}
+	for attempt := 0; attempt < maxSelectAttempts; attempt++ {
+		_, _ = fmt.Fprint(os.Stdout, "Enter a number: ")
+		line, err := term.ReadPassword(int(os.Stdin.Fd()))
+		_, _ = fmt.Fprintln(os.Stdout) // ReadPassword swallows the newline; restore it
+		if err != nil {
+			return 0, fmt.Errorf("selectOption: reading input: %w", err)
+		}
+		s := strings.TrimSpace(string(line))
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 1 || n > len(options) {
+			_, _ = fmt.Fprintf(os.Stdout, "invalid selection %q; enter a number between 1 and %d\n", s, len(options))
+			continue
+		}
+		_, _ = fmt.Fprintf(os.Stdout, "→ selected: [%d] %s\n", n, options[n-1])
+		return n - 1, nil
+	}
+	return 0, fmt.Errorf("selectOption: too many invalid selections")
 }
 
 // ReadTokenPublicKey reads the RSA public key for the given PKCS#11 URI
@@ -108,13 +155,14 @@ func runPKCS11ListDiscovered() error {
 	return nil
 }
 
-// printModuleListing renders one discovered module's header: the label at
-// Info (the concise default), and the technical Path/Source at Verbose.
-// ui.Verbose is a single-pass Printf (format+args, no re-parse), so a literal
-// "%" in m.Path/m.Source needs no escaping when passed as a %s argument
-// (unlike ui.PrintKeyValue -> ui.Info below, which double-formats).
+// printModuleListing renders one discovered module's header: the concise,
+// user-facing Name at Info (the default), and the technical Label/Path/Source
+// at Verbose. ui.Verbose is a single-pass Printf (format+args, no re-parse), so
+// a literal "%" in m.Label/m.Path/m.Source needs no escaping when passed as a
+// %s argument (unlike ui.PrintKeyValue -> ui.Info below, which double-formats).
 func printModuleListing(m pkcs11.DiscoveredModule) {
-	ui.Section(m.Label)
+	ui.Section(m.Name)
+	ui.Verbose("  Module: %s", m.Label)
 	ui.Verbose("  Path: %s", m.Path)
 	ui.Verbose("  Source: %s", m.Source)
 }
@@ -321,20 +369,21 @@ func isInteractive() bool {
 // for a fresh enrollment (init/join/machine add), where every key is a valid
 // choice.
 func resolveEnrollTarget(flagModule, flagURI string, identityPub *rsa.PublicKey) (module, uri string, err error) {
-	module, err = resolveEnrollModule(flagModule)
-	if err != nil {
-		return "", "", err
-	}
-
+	// An explicit --pkcs11-uri fully specifies the key: resolve only the module
+	// (explicit flag/env, or a single autodetected module, or the module picker
+	// when several exist) and return, with no token/key wizard. This is the
+	// non-interactive contract scripts/CI depend on.
 	if flagURI != "" {
+		module, err = resolveEnrollModule(flagModule)
+		if err != nil {
+			return "", "", err
+		}
 		return module, flagURI, nil
 	}
 
-	uri, err = resolveEnrollURI(module, identityPub)
-	if err != nil {
-		return "", "", err
-	}
-	return module, uri, nil
+	// No URI: run the flattened cross-module token picker, which resolves the
+	// module and token together (and then the key on it).
+	return resolveEnrollFlattened(flagModule, identityPub)
 }
 
 // resolveEnrollModule resolves the module path. An explicit --pkcs11-module flag or
@@ -363,14 +412,14 @@ func resolveEnrollModule(flagModule string) (string, error) {
 	if !isInteractive() {
 		var b strings.Builder
 		for _, m := range mods {
-			fmt.Fprintf(&b, "\n  %s (%s)", m.Path, m.Label)
+			fmt.Fprintf(&b, "\n  %s (%s)", m.Path, m.Name)
 		}
 		return "", fmt.Errorf("multiple PKCS#11 modules found; pass --pkcs11-module <path>:%s", b.String())
 	}
 
 	options := make([]string, len(mods))
 	for i, m := range mods {
-		options[i] = fmt.Sprintf("%s (%s)", m.Label, m.Path)
+		options[i] = fmt.Sprintf("%s (%s)", m.Name, m.Path)
 	}
 	choice, err := selectOptionStdio("Multiple PKCS#11 modules found; choose one:", options)
 	if err != nil {
@@ -379,64 +428,159 @@ func resolveEnrollModule(flagModule string) (string, error) {
 	return mods[choice].Path, nil
 }
 
-// resolveEnrollURI runs the interactive key-selection wizard: it requires a
-// terminal (a non-interactive caller must pass --pkcs11-uri instead), lists the RSA
-// keys visible on module, narrows to a token (prompting if more than one),
-// narrows to a key on that token (prompting if more than one), and builds the
-// pkcs11: URI for the selection.
-func resolveEnrollURI(module string, identityPub *rsa.PublicKey) (string, error) {
+// enrollTokenChoice is one (module, token) pair offered by the flattened
+// enrollment picker: the module the token was discovered on (path or
+// "embedded"/"builtin" sentinel), the module's concise display name, the token
+// label, and the RSA keys visible on it (used for the subsequent key step and
+// the rebind identity filter).
+type enrollTokenChoice struct {
+	module     string
+	moduleName string
+	label      string
+	keys       []pkcs11.KeyInfo
+}
+
+// resolveEnrollFlattened runs the flattened enrollment wizard: it presents ONE
+// numbered list of tokens across every detected module (like `pkcs11 list`),
+// lets the user pick a token, and derives both the module and — after the key
+// step — the pkcs11: URI from that single choice. It requires a terminal (a
+// non-interactive caller must pass --pkcs11-uri instead). An explicit
+// --pkcs11-module (or NVOLT_PKCS11_MODULE) restricts the scan to that one
+// module; otherwise every module DetectModules finds is scanned, and a module
+// that fails to open is skipped with a warning (as `pkcs11 list` does) rather
+// than aborting. If exactly one candidate token exists it is auto-selected with
+// no prompt; the key step within the token is unchanged, including the rebind
+// identityPub filter.
+func resolveEnrollFlattened(flagModule string, identityPub *rsa.PublicKey) (module, uri string, err error) {
 	if !isInteractive() {
-		return "", fmt.Errorf("no --pkcs11-uri given and not a terminal; pass --pkcs11-uri 'pkcs11:token=...;id=...'")
+		return "", "", fmt.Errorf("no --pkcs11-uri given and not a terminal; pass --pkcs11-uri 'pkcs11:token=...;id=...'")
 	}
 
-	keys, err := pkcs11.ListRSAKeys(module)
-	if err != nil {
-		return "", fmt.Errorf("failed to list PKCS#11 keys: %w", err)
-	}
-	if len(keys) == 0 {
-		return "", fmt.Errorf("no RSA keys found on %s", module)
+	// Which modules to scan: an explicit module/env restricts to that one;
+	// otherwise every detected module.
+	var mods []pkcs11.DiscoveredModule
+	if flagModule != "" || os.Getenv("NVOLT_PKCS11_MODULE") != "" {
+		path, rerr := pkcs11.ResolveModulePath(flagModule)
+		if rerr != nil {
+			return "", "", rerr
+		}
+		mods = []pkcs11.DiscoveredModule{{Path: path, Name: filepath.Base(path), Label: path}}
+	} else {
+		mods = pkcs11.DetectModules()
+		if len(mods) == 0 {
+			// Reproduce ResolveModulePath's "not found, looked in: ..." error.
+			_, rerr := pkcs11.ResolveModulePath("")
+			if rerr != nil {
+				return "", "", rerr
+			}
+			return "", "", fmt.Errorf("no PKCS#11 modules found; pass --pkcs11-module <path> or set NVOLT_PKCS11_MODULE")
+		}
 	}
 
-	// Rebind pins the choice to the machine's existing identity key: filter the
-	// listed keys to those whose on-card public key matches identityPub. Exactly
-	// one match auto-selects (no prompt); several narrow the wizard to only the
-	// matches; zero keeps today's "no matching key on the token" behavior (with
-	// the import hint) instead of offering an unrelated key.
+	// Enumerate tokens across the modules, skipping any that fail to open (a bad
+	// provider must not abort the picker) and any token with no RSA key yet
+	// (nothing to enroll), exactly as the old per-module wizard did by listing
+	// keys rather than empty tokens.
+	var toks []enrollTokenChoice
+	for _, m := range mods {
+		tokens, lerr := pkcs11.ListTokensAndKeys(m.Path)
+		if lerr != nil {
+			ui.Warning("Skipping %s: %s",
+				strings.ReplaceAll(m.Name, "%", "%%"),
+				strings.ReplaceAll(lerr.Error(), "%", "%%"))
+			continue
+		}
+		for _, t := range tokens {
+			if len(t.Keys) == 0 {
+				continue
+			}
+			toks = append(toks, enrollTokenChoice{module: m.Path, moduleName: m.Name, label: t.Label, keys: t.Keys})
+		}
+	}
+
+	// Rebind (identityPub != nil) narrows the token list to those holding a key
+	// that matches this machine's identity, so the token step can never point
+	// rebind at a token without the right key (and a sole match still
+	// auto-selects, preserving the no-prompt rebind path).
 	if identityPub != nil {
-		matches := filterKeysMatchingIdentity(module, keys, identityPub)
+		var kept []enrollTokenChoice
+		for _, t := range toks {
+			if len(filterKeysMatchingIdentity(t.module, t.keys, identityPub)) > 0 {
+				kept = append(kept, t)
+			}
+		}
+		toks = kept
+	}
+
+	if len(toks) == 0 {
+		if identityPub != nil {
+			return "", "", fmt.Errorf("no token holding a key matching this machine's identity was found; " +
+				"put your key on the card first (nvolt pkcs11 import --privkey <your-key.pem> --token <label>, " +
+				"or on a YubiKey: ykman piv keys import <slot> <your-key.pem>), then re-run")
+		}
+		return "", "", fmt.Errorf("no PKCS#11 token with an RSA key was found; create one with 'nvolt pkcs11 generate' or pass --pkcs11-uri")
+	}
+
+	// Pick the token (auto-select the sole candidate).
+	var chosen enrollTokenChoice
+	if len(toks) == 1 {
+		chosen = toks[0]
+	} else {
+		options := make([]string, len(toks))
+		for i, t := range toks {
+			options[i] = fmt.Sprintf("%s (%s)", t.label, t.moduleName)
+		}
+		choice, serr := selectOptionStdio("Choose a token to enroll:", options)
+		if serr != nil {
+			return "", "", fmt.Errorf("token selection: %w", serr)
+		}
+		chosen = toks[choice]
+	}
+
+	uri, err = selectKeyURIOnToken(chosen, identityPub)
+	if err != nil {
+		return "", "", err
+	}
+	return chosen.module, uri, nil
+}
+
+// selectKeyURIOnToken resolves the pkcs11: URI for a key on the already-chosen
+// token. It is the unchanged key-selection step: for rebind (identityPub !=
+// nil) it filters to keys whose on-card public key matches the machine's
+// identity — a sole match auto-selects, several narrow the prompt, zero errors
+// with the import hint — and for a fresh enrollment (identityPub == nil) it
+// offers every key on the token (auto-selecting a sole key).
+func selectKeyURIOnToken(t enrollTokenChoice, identityPub *rsa.PublicKey) (string, error) {
+	keys := t.keys
+	if identityPub != nil {
+		matches := filterKeysMatchingIdentity(t.module, keys, identityPub)
 		switch len(matches) {
 		case 0:
-			return "", fmt.Errorf("no key matching this machine's identity was found on %s; "+
+			return "", fmt.Errorf("no key matching this machine's identity was found on token %q; "+
 				"put your key on the card first (nvolt pkcs11 import --privkey <your-key.pem> --token <label>, "+
-				"or on a YubiKey: ykman piv keys import <slot> <your-key.pem>), then re-run", module)
+				"or on a YubiKey: ykman piv keys import <slot> <your-key.pem>), then re-run", t.label)
 		case 1:
 			k := matches[0]
-			return fmt.Sprintf("pkcs11:token=%s;id=%s;type=private",
-				pctEncodePKCS11Attr(k.TokenLabel), pctEncodeID(k.ID)), nil
+			return buildPKCS11URI(k.TokenLabel, k.ID), nil
 		default:
 			keys = matches
 		}
 	}
 
-	tokenLabel, err := selectToken(keys)
+	key, err := selectKey(keys)
 	if err != nil {
 		return "", err
 	}
+	return buildPKCS11URI(key.TokenLabel, key.ID), nil
+}
 
-	var onToken []pkcs11.KeyInfo
-	for _, k := range keys {
-		if k.TokenLabel == tokenLabel {
-			onToken = append(onToken, k)
-		}
-	}
-
-	key, err := selectKey(onToken)
-	if err != nil {
-		return "", err
-	}
-
+// buildPKCS11URI renders the private-key pkcs11: URI for a token label and key
+// id, percent-encoding both per RFC7512 so they round-trip through
+// keyprovider.ParsePKCS11URI. It is the single source of the URI shape used by
+// the wizard and the identity filter.
+func buildPKCS11URI(tokenLabel string, id []byte) string {
 	return fmt.Sprintf("pkcs11:token=%s;id=%s;type=private",
-		pctEncodePKCS11Attr(tokenLabel), pctEncodeID(key.ID)), nil
+		pctEncodePKCS11Attr(tokenLabel), pctEncodeID(id))
 }
 
 // filterKeysMatchingIdentity returns the subset of keys whose on-card public
@@ -449,9 +593,7 @@ func resolveEnrollURI(module string, identityPub *rsa.PublicKey) (string, error)
 func filterKeysMatchingIdentity(module string, keys []pkcs11.KeyInfo, identityPub *rsa.PublicKey) []pkcs11.KeyInfo {
 	var out []pkcs11.KeyInfo
 	for _, k := range keys {
-		uri := fmt.Sprintf("pkcs11:token=%s;id=%s;type=private",
-			pctEncodePKCS11Attr(k.TokenLabel), pctEncodeID(k.ID))
-		pub, err := ReadTokenPublicKey(module, uri)
+		pub, err := ReadTokenPublicKey(module, buildPKCS11URI(k.TokenLabel, k.ID))
 		if err != nil {
 			continue
 		}
@@ -460,28 +602,6 @@ func filterKeysMatchingIdentity(module string, keys []pkcs11.KeyInfo, identityPu
 		}
 	}
 	return out
-}
-
-// selectToken narrows keys to a single token label: the one label present, or
-// (when more than one token has RSA keys) a wizard prompt among the distinct
-// labels in first-seen order.
-func selectToken(keys []pkcs11.KeyInfo) (string, error) {
-	var labels []string
-	seen := map[string]bool{}
-	for _, k := range keys {
-		if !seen[k.TokenLabel] {
-			seen[k.TokenLabel] = true
-			labels = append(labels, k.TokenLabel)
-		}
-	}
-	if len(labels) == 1 {
-		return labels[0], nil
-	}
-	choice, err := selectOptionStdio("Multiple tokens found; choose one:", labels)
-	if err != nil {
-		return "", fmt.Errorf("token selection: %w", err)
-	}
-	return labels[choice], nil
 }
 
 // selectKey narrows onToken (already filtered to a single token) to a single

@@ -308,15 +308,17 @@ func TestPctEncodeIDSingleByte(t *testing.T) {
 	}
 }
 
-// TestResolveEnrollURINonInteractiveErrorsWithoutHanging proves the wizard's
-// URI step refuses to prompt when stdin is not a terminal (the normal case
-// under `go test`): it must return a clear, actionable error immediately
-// instead of blocking on input or silently guessing a key.
-func TestResolveEnrollURINonInteractiveErrorsWithoutHanging(t *testing.T) {
+// TestResolveEnrollTargetNonInteractiveErrorsWithoutHanging proves the
+// flattened token wizard refuses to prompt when stdin is not a terminal (the
+// normal case under `go test`) and no --pkcs11-uri was given: it must return a
+// clear, actionable error immediately instead of blocking on input or silently
+// guessing a token/key. The guard fires before any module is opened, so the
+// module argument is irrelevant here.
+func TestResolveEnrollTargetNonInteractiveErrorsWithoutHanging(t *testing.T) {
 	if isInteractive() {
 		t.Skip("stdin is a terminal in this environment; non-interactive gating not exercised")
 	}
-	_, err := resolveEnrollURI("/nonexistent/pkcs11-module.so", nil)
+	_, _, err := resolveEnrollTarget("/nonexistent/pkcs11-module.so", "", nil)
 	if err == nil {
 		t.Fatal("expected an error when stdin is not a terminal, got nil")
 	}

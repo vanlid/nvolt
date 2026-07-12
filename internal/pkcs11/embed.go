@@ -86,6 +86,7 @@ func appendEmbeddedOption(mods []DiscoveredModule, available bool) []DiscoveredM
 	}
 	return append(mods, DiscoveredModule{
 		Path:   embeddedModuleSentinel,
+		Name:   "Built-in TPM module",
 		Label:  "wolfPKCS11 (built-in, TPM)",
 		Source: "embedded",
 	})
