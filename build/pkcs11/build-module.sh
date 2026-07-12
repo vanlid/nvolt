@@ -146,7 +146,15 @@ cd "$WORK/wolfPKCS11"
   --disable-examples --with-wolfcrypt="$PREFIX" \
   CPPFLAGS="-I$PREFIX/include" CFLAGS="-DWOLFPKCS11_TPM_STORE -I$PREFIX/include" \
   LDFLAGS="-L$PREFIX/lib"
-make -j"$JOBS"
+# On Windows, wolfPKCS11's examples #include <dlfcn.h> (Unix dlopen), which mingw
+# lacks, and --disable-examples doesn't stop `make all` from building them. We
+# only need the library (the module we embed), so build just that target there.
+# Other targets keep `make all` (examples compile fine and this stays a no-op).
+if [[ "$HOST_TRIPLE" == *mingw* ]]; then
+  make -j"$JOBS" src/libwolfpkcs11.la
+else
+  make -j"$JOBS"
+fi
 
 if [ -n "${STATIC_ARCHIVES:-}" ]; then
   log "installing static archives + headers to $STATIC_ARCHIVES (cgo static-link mode)"
