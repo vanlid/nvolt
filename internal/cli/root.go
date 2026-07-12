@@ -44,6 +44,16 @@ enforced through wrapped key files.`,
 			ui.SetLevel(ui.LevelInfo)
 		}
 
+		// The embedded wolfPKCS11 TPM module prints its device caps banner
+		// (manufacturer, firmware, FIPS/CC-EAL) on C_Initialize only when
+		// NVOLT_TPM_CAPS is set — build/pkcs11/build-module.sh gates the
+		// otherwise-unconditional upstream printf behind it. Surface that detail
+		// whenever the user asked for verbose/debug output. Only ever set it
+		// (never unset), and never override an operator-provided value.
+		if (debug || verbose) && os.Getenv("NVOLT_TPM_CAPS") == "" {
+			_ = os.Setenv("NVOLT_TPM_CAPS", "1")
+		}
+
 		// Point the embedded wolfPKCS11 module's filesystem token store at
 		// nvolt's own config dir (respecting NVOLT_CONFIG via GetHomePaths),
 		// unless the operator set WOLFPKCS11_TOKEN_PATH explicitly. Required on

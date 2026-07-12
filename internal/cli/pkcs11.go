@@ -119,6 +119,15 @@ exposes without a PIN.
 Example:
   nvolt pkcs11 list --pkcs11-module /usr/lib/softhsm/libsofthsm2.so`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// `pkcs11 list` is where the embedded wolfPKCS11 module's TPM device caps
+		// banner is wanted (it identifies the TPM behind the token), so enable it
+		// even at the default output level. build-module.sh gates that upstream
+		// printf behind NVOLT_TPM_CAPS; set it before any C_Initialize, only when
+		// unset so an operator-provided value still wins.
+		if os.Getenv("NVOLT_TPM_CAPS") == "" {
+			_ = os.Setenv("NVOLT_TPM_CAPS", "1")
+		}
+
 		// An explicit --pkcs11-module or NVOLT_PKCS11_MODULE targets a single module.
 		// Otherwise, autodiscover and list every module we find.
 		if pkcs11Module != "" || os.Getenv("NVOLT_PKCS11_MODULE") != "" {
@@ -226,6 +235,14 @@ func printTokenListing(tok pkcs11.TokenListing, module string) {
 		// for the token label.
 		ui.Info("    RSA-%d", k.Bits)
 		ui.Verbose("      ID: %x  Label: %s", k.ID, k.Label)
+		// The public-key fingerprint (same "SHA256:<base64>" shown as
+		// "Fingerprint:" during init) lets a user match a token key to a
+		// machine's identity. Verbose-only, and only when discovery could read
+		// the public half (empty otherwise). ui.Verbose is single-pass Printf,
+		// so the fingerprint (base64, no "%") is safe as a plain %s argument.
+		if k.Fingerprint != "" {
+			ui.Verbose("      Fingerprint: %s", k.Fingerprint)
+		}
 		fmt.Println()
 	}
 }

@@ -1,9 +1,12 @@
 package pkcs11
 
 import (
+	"crypto/rsa"
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	nvcrypto "github.com/iluxav/nvolt/internal/crypto"
 )
 
 // DiscoveredModule describes one PKCS#11 provider found by DetectModules.
@@ -182,6 +185,35 @@ type KeyInfo struct {
 	Label      string
 	ID         []byte
 	Bits       int
+	// Fingerprint is the "SHA256:<base64>" fingerprint of the key's RSA public
+	// half, computed the same way as a machine's identity fingerprint
+	// (crypto.GenerateFingerprint) so the two are directly comparable. It is
+	// best-effort: empty when the public key or exponent could not be read
+	// during no-login discovery.
+	Fingerprint string
+}
+
+// pubFingerprint computes the "SHA256:<base64>" fingerprint of an RSA public
+// key, delegating to crypto.GenerateFingerprint so a token key's fingerprint is
+// byte-for-byte comparable to a machine's identity fingerprint (shown as
+// "Fingerprint:" during init). Both loader builds (purego and cgo) share it.
+//
+// It is best-effort and returns "" rather than a misleading value when the key
+// material is not actually present: some tokens (e.g. wolfPKCS11) do not expose
+// CKA_MODULUS/CKA_PUBLIC_EXPONENT until the session logs in, so a no-login
+// discovery read yields a zero modulus/exponent. Fingerprinting that degenerate
+// key would produce a constant that is IDENTICAL for every such key — worse than
+// showing nothing, since a user could "match" two different keys — so a key
+// without a real modulus (BitLen 0) or exponent (<= 0) is reported as "".
+func pubFingerprint(pub *rsa.PublicKey) string {
+	if pub == nil || pub.N == nil || pub.N.BitLen() == 0 || pub.E <= 0 {
+		return ""
+	}
+	fp, err := nvcrypto.GenerateFingerprint(pub)
+	if err != nil {
+		return ""
+	}
+	return fp
 }
 
 // TokenListing describes one token seen by ListTokensAndKeys: the token's

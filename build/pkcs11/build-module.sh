@@ -122,6 +122,21 @@ export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig"
 
 log() { printf '\n\033[1;32m== %s ==\033[0m\n' "$1" >&2; }
 
+# wolfPKCS11's wp11_TpmInit (src/internal.c) has an unconditional printf that
+# dumps the TPM caps banner ("Mfg AMD (0), Vendor AMD, Fw 6.32 ..., FIPS ...,
+# CC-EAL4 ...") on EVERY C_Initialize. Embedded in nvolt that spams the banner
+# on every command that touches the TPM. Gate the printf behind the
+# NVOLT_TPM_CAPS env var so it is silent by default; nvolt sets NVOLT_TPM_CAPS=1
+# only for `pkcs11 list` and when -v/--debug is on. getenv is already declared
+# here: wolfpkcs11/pkcs11.h (included by internal.c) pulls in <stdlib.h> unless
+# WOLFPKCS11_USER_ENV/NO_ENV is set, which this build never sets. Called right
+# after each wolfPKCS11 clone, before it is configured/built (both the Windows
+# cmake path and the Linux autotools path below share $WORK/wolfPKCS11).
+patch_tpm_caps_banner() {
+  perl -0pi -e 's/(\bprintf\("Mfg %s.*?cc_eal4\);)/if (getenv("NVOLT_TPM_CAPS") != NULL) { $1 }/s' \
+    "$WORK/wolfPKCS11/src/internal.c"
+}
+
 # =============================================================================
 # Windows targets: CMake cross-build (separate from the autotools path below).
 # -----------------------------------------------------------------------------
@@ -196,6 +211,7 @@ EOF
 
   log "wolfPKCS11 $WOLFPKCS11_TAG (shared DLL; wolfSSL+wolfTPM baked in, TBS-backed)"
   git clone --depth 1 --branch "$WOLFPKCS11_TAG" https://github.com/wolfSSL/wolfPKCS11.git "$WORK/wolfPKCS11"
+  patch_tpm_caps_banner   # gate the TPM caps-banner printf behind NVOLT_TPM_CAPS
   # Notes on the link flags:
   #  -ltbs (via CMAKE_C_STANDARD_LIBRARIES, so it lands LAST on the link line,
   #    after -lwolftpm): wolfPKCS11 links wolfTPM as a raw -lwolftpm rather than
@@ -303,6 +319,7 @@ make install
 
 log "wolfPKCS11 $WOLFPKCS11_TAG (shared module; wolfSSL+wolfTPM baked in as static archives)"
 git clone --depth 1 --branch "$WOLFPKCS11_TAG" https://github.com/wolfSSL/wolfPKCS11.git "$WORK/wolfPKCS11"
+patch_tpm_caps_banner   # gate the TPM caps-banner printf behind NVOLT_TPM_CAPS
 cd "$WORK/wolfPKCS11"
 ./autogen.sh
 ./configure $HOST_FLAG --prefix="$PREFIX" --enable-static --enable-singlethreaded --enable-wolftpm --disable-dh \
