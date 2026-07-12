@@ -21,6 +21,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// selectOptionStdio is selectOption (see prompt.go) wired to the real terminal
+// (os.Stdout/os.Stdin). It lives here, beside its only callers in the
+// interactive pkcs11 wizard, so it shares their build tag; tests exercise
+// selectOption directly with an injected reader/writer.
+func selectOptionStdio(title string, options []string) (int, error) {
+	return selectOption(os.Stdout, os.Stdin, title, options)
+}
+
 // ReadTokenPublicKey reads the RSA public key for the given PKCS#11 URI
 // without logging in (see keyprovider.ReadTokenPublicKey). Used by
 // `machine add --pkcs11`, which registers an existing on-card key's public
