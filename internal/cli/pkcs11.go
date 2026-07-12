@@ -54,7 +54,7 @@ var pkcs11ImportFile string
 var pkcs11ImportPinMode string
 
 var pkcs11Cmd = &cobra.Command{
-	Use:   "pkcs11",
+	Use:   pkcs11Name,
 	Short: "Interact with PKCS#11 hardware tokens (YubiKey, SoftHSM, etc.)",
 	Long: `Discover and use RSA keys stored on PKCS#11 tokens such as a YubiKey
 or SoftHSM, via a PKCS#11 module (.so).`,
@@ -534,13 +534,13 @@ func runPKCS11Generate(module, token, label, idHex string, bits int, pinMode str
 	if err != nil {
 		return fmt.Errorf("failed to open PKCS#11 module: %w", err)
 	}
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	sess, err := m.OpenSessionRW(token)
 	if err != nil {
 		return fmt.Errorf("failed to open session on token %q: %w", token, err)
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 
 	pin, err := pinentry.Read(pinMode)
 	if err != nil {
@@ -616,13 +616,13 @@ func runPKCS11Import(module, token, label, idHex, keyFile, pinMode string) error
 	if err != nil {
 		return fmt.Errorf("failed to open PKCS#11 module: %w", err)
 	}
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	sess, err := m.OpenSessionRW(token)
 	if err != nil {
 		return fmt.Errorf("failed to open session on token %q: %w", token, err)
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 
 	pin, err := pinentry.Read(pinMode)
 	if err != nil {

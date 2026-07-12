@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
 	"os"
@@ -10,6 +11,13 @@ import (
 	nvcrypto "github.com/iluxav/nvolt/internal/crypto"
 	"github.com/iluxav/nvolt/internal/hsmtest"
 	"github.com/iluxav/nvolt/internal/vault"
+)
+
+// PIN-mode and key-source literals shared across this file's rebind tests.
+const (
+	testPinModePrompt  = "prompt"
+	testPinModeEnv     = "env"
+	testSourceSoftware = "software"
 )
 
 func TestSamePublicKey(t *testing.T) {
@@ -43,7 +51,7 @@ func TestRebindSoftwareToSoftware_NoOpFlipsConfigWithoutDeletingKey(t *testing.T
 	rebindSoftware = true
 	rebindModule = ""
 	rebindURI = ""
-	rebindPinMode = "prompt"
+	rebindPinMode = testPinModePrompt
 	rebindPrivkey = ""
 
 	if err := runRebind(); err != nil {
@@ -58,7 +66,7 @@ func TestRebindSoftwareToSoftware_NoOpFlipsConfigWithoutDeletingKey(t *testing.T
 	if err != nil {
 		t.Fatalf("LoadMachineInfo after rebind: %v", err)
 	}
-	if mi2.KeySource == nil || mi2.KeySource.Source != "software" {
+	if mi2.KeySource == nil || mi2.KeySource.Source != testSourceSoftware {
 		t.Fatalf("expected key_source to be software after rebind, got %+v", mi2.KeySource)
 	}
 }
@@ -93,7 +101,7 @@ func TestRebindSoftware_RefusesWhenExistingKeyDiffers(t *testing.T) {
 	rebindSoftware = true
 	rebindModule = ""
 	rebindURI = ""
-	rebindPinMode = "prompt"
+	rebindPinMode = testPinModePrompt
 	rebindPrivkey = ""
 
 	err = runRebind()
@@ -130,7 +138,7 @@ func TestRebindSoftware_PrivkeyWritesIntoEmptySlot(t *testing.T) {
 
 	// Copy A's PEM out to a separate --privkey file.
 	privkeyPath := t.TempDir() + "/identity-a.pem"
-	if err := os.WriteFile(privkeyPath, identityPEM, 0600); err != nil {
+	if err := os.WriteFile(privkeyPath, identityPEM, 0o600); err != nil {
 		t.Fatalf("write privkey file: %v", err)
 	}
 
@@ -146,7 +154,7 @@ func TestRebindSoftware_PrivkeyWritesIntoEmptySlot(t *testing.T) {
 	rebindSoftware = true
 	rebindModule = ""
 	rebindURI = ""
-	rebindPinMode = "prompt"
+	rebindPinMode = testPinModePrompt
 	rebindPrivkey = privkeyPath
 
 	if err := runRebind(); err != nil {
@@ -173,7 +181,7 @@ func TestRebindSoftware_PrivkeyWritesIntoEmptySlot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadMachineInfo after rebind: %v", err)
 	}
-	if mi2.KeySource == nil || mi2.KeySource.Source != "software" {
+	if mi2.KeySource == nil || mi2.KeySource.Source != testSourceSoftware {
 		t.Fatalf("expected key_source to be software after rebind, got %+v", mi2.KeySource)
 	}
 }
@@ -197,7 +205,7 @@ func TestRebindSoftware_PrivkeyRefusesWhenExistingDiffers(t *testing.T) {
 	}
 
 	privkeyPath := t.TempDir() + "/identity-a.pem"
-	if err := os.WriteFile(privkeyPath, identityPEM, 0600); err != nil {
+	if err := os.WriteFile(privkeyPath, identityPEM, 0o600); err != nil {
 		t.Fatalf("write privkey file: %v", err)
 	}
 
@@ -218,7 +226,7 @@ func TestRebindSoftware_PrivkeyRefusesWhenExistingDiffers(t *testing.T) {
 	rebindSoftware = true
 	rebindModule = ""
 	rebindURI = ""
-	rebindPinMode = "prompt"
+	rebindPinMode = testPinModePrompt
 	rebindPrivkey = privkeyPath
 
 	err = runRebind()
@@ -274,7 +282,7 @@ func TestRebindSoftware_PrivkeyDoesNotMatchIdentity(t *testing.T) {
 		t.Fatalf("encode key C: %v", err)
 	}
 	privkeyPath := t.TempDir() + "/identity-c.pem"
-	if err := os.WriteFile(privkeyPath, keyCPEM, 0600); err != nil {
+	if err := os.WriteFile(privkeyPath, keyCPEM, 0o600); err != nil {
 		t.Fatalf("write privkey file: %v", err)
 	}
 
@@ -282,7 +290,7 @@ func TestRebindSoftware_PrivkeyDoesNotMatchIdentity(t *testing.T) {
 	rebindSoftware = true
 	rebindModule = ""
 	rebindURI = ""
-	rebindPinMode = "prompt"
+	rebindPinMode = testPinModePrompt
 	rebindPrivkey = privkeyPath
 
 	err = runRebind()
@@ -297,7 +305,7 @@ func TestRebindSoftware_PrivkeyDoesNotMatchIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read private key after rejection: %v", err)
 	}
-	if string(after) != string(before) {
+	if !bytes.Equal(after, before) {
 		t.Fatal("private key file must be unchanged when --privkey doesn't match identity")
 	}
 }
@@ -331,7 +339,7 @@ func TestRebindToHardware_NoMatchingKeyOnTokenPrintsImportHint(t *testing.T) {
 	rebindModule = mod
 	// id=99 exists on neither hsmtest.KeyID ("01") nor WeakKeyID ("02").
 	rebindURI = "pkcs11:token=" + hsmtest.TokenLabel + ";id=%99;type=private"
-	rebindPinMode = "env"
+	rebindPinMode = testPinModeEnv
 	rebindPrivkey = ""
 
 	err := runRebind()

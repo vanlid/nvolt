@@ -308,7 +308,7 @@ func TestRebindToHardwareVerboseShowsModuleFingerprint(t *testing.T) {
 
 	ui.SetLevel(ui.LevelInfo)
 	defer ui.SetLevel(ui.LevelInfo)
-	out, err := captureStdout(func() error { return runRebind() })
+	out, err := captureStdout(runRebind)
 	if err != nil {
 		t.Fatalf("runRebind: %v\noutput:\n%s", err, out)
 	}
@@ -320,7 +320,7 @@ func TestRebindToHardwareVerboseShowsModuleFingerprint(t *testing.T) {
 	}
 
 	ui.SetLevel(ui.LevelVerbose)
-	vout, err := captureStdout(func() error { return runRebind() })
+	vout, err := captureStdout(runRebind)
 	if err != nil {
 		t.Fatalf("runRebind (verbose): %v\noutput:\n%s", err, vout)
 	}

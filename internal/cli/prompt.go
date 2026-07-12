@@ -24,14 +24,14 @@ func selectOption(w io.Writer, r io.Reader, title string, options []string) (int
 		return 0, fmt.Errorf("selectOption: no options to choose from")
 	}
 
-	fmt.Fprintln(w, title)
+	_, _ = fmt.Fprintln(w, title)
 	for i, opt := range options {
-		fmt.Fprintf(w, "  [%d] %s\n", i+1, opt)
+		_, _ = fmt.Fprintf(w, "  [%d] %s\n", i+1, opt)
 	}
 
 	scanner := bufio.NewScanner(r)
 	for attempt := 0; attempt < maxSelectAttempts; attempt++ {
-		fmt.Fprint(w, "Enter a number: ")
+		_, _ = fmt.Fprint(w, "Enter a number: ")
 		if !scanner.Scan() {
 			if err := scanner.Err(); err != nil {
 				return 0, fmt.Errorf("selectOption: reading input: %w", err)
@@ -41,7 +41,7 @@ func selectOption(w io.Writer, r io.Reader, title string, options []string) (int
 		line := strings.TrimSpace(scanner.Text())
 		n, err := strconv.Atoi(line)
 		if err != nil || n < 1 || n > len(options) {
-			fmt.Fprintf(w, "invalid selection %q; enter a number between 1 and %d\n", line, len(options))
+			_, _ = fmt.Fprintf(w, "invalid selection %q; enter a number between 1 and %d\n", line, len(options))
 			continue
 		}
 		return n - 1, nil

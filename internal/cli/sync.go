@@ -86,7 +86,7 @@ func runSync(rotate bool, environment string, autoGrant bool) error {
 	if err != nil {
 		return fmt.Errorf("failed to load machine key: %w", err)
 	}
-	defer closeDec()
+	defer func() { _ = closeDec() }()
 
 	if rotate {
 		ui.Step("%s", fmt.Sprintf("Rotating master key for environment '%s'", ui.Cyan(environment)))

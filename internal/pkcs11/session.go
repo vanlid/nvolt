@@ -137,7 +137,7 @@ func (m *Module) findSlot(tokenLabel string) (uintptr, uintptr, error) {
 // index-out-of-range. Callers already guard on pin != "" before calling
 // Login, but this keeps Login itself safe for any future caller.
 func (s *Session) Login(pin string) error {
-	if len(pin) == 0 {
+	if pin == "" {
 		return nil
 	}
 	pinB := []byte(pin)

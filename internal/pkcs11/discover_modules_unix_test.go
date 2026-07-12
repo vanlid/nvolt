@@ -8,6 +8,12 @@ import (
 	"testing"
 )
 
+// Module.Source values asserted throughout this file's detectModulesUnix tests.
+const (
+	testSourceP11Kit = "p11-kit"
+	testSourcePath   = "path"
+)
+
 // writeTempModule creates an empty file to stand in for a PKCS#11 module and
 // returns its path.
 func writeTempModule(t *testing.T, dir, name string) string {
@@ -34,10 +40,10 @@ func TestDetectModulesUnixProxyFirst(t *testing.T) {
 	if len(mods) != 2 {
 		t.Fatalf("got %d modules, want 2: %+v", len(mods), mods)
 	}
-	if mods[0].Path != proxy || mods[0].Source != "p11-kit" {
+	if mods[0].Path != proxy || mods[0].Source != testSourceP11Kit {
 		t.Fatalf("first module = %+v, want proxy with source p11-kit", mods[0])
 	}
-	if mods[1].Path != opensc || mods[1].Source != "path" || mods[1].Label != "opensc-pkcs11.so" {
+	if mods[1].Path != opensc || mods[1].Source != testSourcePath || mods[1].Label != "opensc-pkcs11.so" {
 		t.Fatalf("second module = %+v, want opensc common-path entry", mods[1])
 	}
 }
@@ -55,7 +61,7 @@ func TestDetectModulesUnixDedup(t *testing.T) {
 	if len(mods) != 1 {
 		t.Fatalf("got %d modules, want 1 (dedup): %+v", len(mods), mods)
 	}
-	if mods[0].Source != "p11-kit" {
+	if mods[0].Source != testSourceP11Kit {
 		t.Fatalf("kept module = %+v, want the proxy entry", mods[0])
 	}
 }
@@ -99,7 +105,7 @@ func TestDetectModulesUnixNoProxy(t *testing.T) {
 	if len(mods) != 1 {
 		t.Fatalf("got %d modules, want 1: %+v", len(mods), mods)
 	}
-	if mods[0].Source != "path" || mods[0].Label != "libykcs11.so" {
+	if mods[0].Source != testSourcePath || mods[0].Label != "libykcs11.so" {
 		t.Fatalf("module = %+v, want ykcs11 common-path entry", mods[0])
 	}
 }

@@ -212,7 +212,7 @@ func runVaultVerify() error {
 			if derr != nil {
 				warnings = append(warnings, fmt.Sprintf("Cannot load machine key to check environment access: %v", derr))
 			} else {
-				defer closeDec()
+				defer func() { _ = closeDec() }()
 				for _, envDir := range envDirs {
 					envName := vault.GetDirName(envDir)
 					_, err := vault.UnwrapMasterKey(paths, envName, dec)

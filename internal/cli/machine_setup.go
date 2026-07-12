@@ -44,6 +44,10 @@ func EnsureMachineInitialized() error {
 	return nil
 }
 
+// pkcs11Name is both the machine-info key_source.source value for a
+// hardware-token-backed identity and the `nvolt pkcs11` subcommand name.
+const pkcs11Name = "pkcs11"
+
 // pkcs11InitAction enumerates how init/join should treat this machine's
 // existing identity (if any) when --pkcs11 is requested.
 type pkcs11InitAction int
@@ -70,7 +74,7 @@ func decidePKCS11InitAction(initialized bool, existingSource string) pkcs11InitA
 	if !initialized {
 		return pkcs11ActionEnroll
 	}
-	if existingSource == "pkcs11" {
+	if existingSource == pkcs11Name {
 		return pkcs11ActionReuse
 	}
 	return pkcs11ActionSoftwareConflict
